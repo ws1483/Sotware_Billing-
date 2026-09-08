@@ -103,8 +103,27 @@ Public Function StmtPickFolder() As String
     If fd.Show = -1 Then StmtPickFolder = fd.SelectedItems(1) Else StmtPickFolder = ""
 End Function
 
+' AUDIT FIX (v2): previously this copied the template straight to OUT_SHEET's
+' name; if that rename ever failed (e.g. a stray sheet still held the name,
+' or a non-worksheet object such as a chart sheet used it) the freshly-made
+' copy was left behind on-screen under Excel's own auto-generated name
+' ("StatementTpl (2)") instead of being cleaned up - this is the "opens a
+' template (2) sheet" symptom. Also, the old stray-cleanup loop deleted
+' sheets while iterating a live For Each over Worksheets, which can skip
+' items when a mid-collection item is removed (the likely cause of the
+' earlier incident where unrelated sheets got deleted). Fixed by:
+'  1) copying to a private, guaranteed-unique temp name first (never
+'     relying on Excel's "(2)"/"(3)" auto-numbering),
+'  2) only then removing any prior OUT_SHEET and renaming the temp copy in,
+'  3) deleting the temp copy (instead of leaving it visible) if the final
+'     rename still fails, so a half-finished copy is never shown to the user,
+'  4) cleaning up any other stray copies with a backwards index-based loop
+'     that only ever matches by name pattern and never touches the template
+'     or the sheet we just created (compared by object identity).
 Private Function ResetStatementSheet() As Worksheet
-    Dim tpl As Worksheet, ws As Worksheet, s As Worksheet
+    Dim tpl As Worksheet, ws As Worksheet, old As Worksheet, s As Worksheet
+    Dim tmpName As String, i As Long
+
     On Error Resume Next
     Set tpl = ThisWorkbook.Sheets(TPL_SHEET)
     On Error GoTo 0
@@ -114,35 +133,59 @@ Private Function ResetStatementSheet() As Worksheet
     End If
 
     Application.DisplayAlerts = False
-    For Each s In ThisWorkbook.Worksheets
-        If s.Name = OUT_SHEET Or (s.Name Like TPL_SHEET & " (*)") Then
-            If s.Name <> TPL_SHEET Then
+
+    tpl.Copy After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count)
+    Set ws = ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count)
+
+    tmpName = "~StmtTmp_" & Format(Now, "hhmmss") & "_" & CStr(ws.Index)
+    On Error Resume Next
+    ws.Name = tmpName
+    On Error GoTo 0
+
+    ' Remove any previous output sheet now that the new copy is safely
+    ' parked under a private temp name (so a problem here can never leave
+    ' two sheets both contending for the name OUT_SHEET).
+    On Error Resume Next
+    Set old = ThisWorkbook.Sheets(OUT_SHEET)
+    On Error GoTo 0
+    If Not old Is Nothing Then
+        On Error Resume Next
+        old.Delete
+        On Error GoTo 0
+    End If
+
+    On Error Resume Next
+    ws.Name = OUT_SHEET
+    On Error GoTo 0
+
+    If ws.Name <> OUT_SHEET Then
+        ' Rename still failed (name unavailable for a reason we could not
+        ' clear, e.g. a non-worksheet object holds it) - delete the fresh
+        ' copy rather than leaving it dangling and visible, then abort.
+        On Error Resume Next
+        ws.Delete
+        On Error GoTo 0
+        Application.DisplayAlerts = True
+        Err.Raise vbObjectError + 2, , _
+            "Could not create the '" & OUT_SHEET & "' sheet (name still unavailable " & _
+            "after removing any prior '" & OUT_SHEET & "' sheet). No data sheets were modified."
+    End If
+
+    ' Clean up any stray copies left over from earlier failed runs. Iterate
+    ' backwards by index (not For Each) so deleting mid-loop cannot skip an
+    ' item, and only ever touch sheets identified by name pattern - the
+    ' template and the sheet we just created are excluded by object identity,
+    ' never by name, so this can never remove the wrong sheet.
+    For i = ThisWorkbook.Worksheets.Count To 1 Step -1
+        Set s = ThisWorkbook.Worksheets(i)
+        If Not (s Is ws) And Not (s Is tpl) Then
+            If s.Name Like TPL_SHEET & " (*)" Or s.Name Like "~StmtTmp_*" Then
                 On Error Resume Next
                 s.Delete
                 On Error GoTo 0
             End If
         End If
-    Next s
-
-    tpl.Copy After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count)
-    Set ws = ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count)
-
-    On Error Resume Next
-    ws.Name = OUT_SHEET
-    On Error GoTo 0
-    If ws.Name <> OUT_SHEET Then
-        On Error Resume Next
-        ThisWorkbook.Sheets(OUT_SHEET).Delete
-        ws.Name = OUT_SHEET
-        On Error GoTo 0
-    End If
-
-    If ws.Name <> OUT_SHEET Then
-        Application.DisplayAlerts = True
-        Err.Raise vbObjectError + 2, , _
-            "Could not create the '" & OUT_SHEET & "' sheet (name clash). " & _
-            "Delete any stray 'Statement' sheet and retry. No data sheets were modified."
-    End If
+    Next i
 
     ws.Visible = xlSheetVisible
     Application.DisplayAlerts = True
