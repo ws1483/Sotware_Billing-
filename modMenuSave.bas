@@ -1,4 +1,6 @@
 Attribute VB_Name = "modMenuSave"
+Option Explicit                              ' PHASE 0: added
+
 Public Sub SaveWorkbookNow()
     On Error GoTo Fail
     Application.DisplayAlerts = False
@@ -10,4 +12,3 @@ Fail:
     Application.DisplayAlerts = True
     MsgBox "Save error: " & Err.Description, vbExclamation, "Save"
 End Sub
-

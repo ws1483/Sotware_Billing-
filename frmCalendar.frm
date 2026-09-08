@@ -60,7 +60,7 @@ Private Sub UserForm_Initialize()
     mCurYear = Year(Date)
     mCurMonth = Month(Date)
     cboMonth.ListIndex = mCurMonth - 1
-    cboYear.Value = mCurYear
+    cboYear.value = mCurYear
 
     RefreshGrid
 End Sub
@@ -71,7 +71,7 @@ Public Sub SeedDate(ByVal seed As Variant)
         mCurYear = Year(seed)
         mCurMonth = Month(seed)
         cboMonth.ListIndex = mCurMonth - 1
-        cboYear.Value = mCurYear
+        cboYear.value = mCurYear
         RefreshGrid
     End If
 End Sub
@@ -159,8 +159,8 @@ Private Sub cboMonth_Change()
 End Sub
 
 Private Sub cboYear_Change()
-    If IsNumeric(cboYear.Value) Then
-        mCurYear = CInt(cboYear.Value)
+    If IsNumeric(cboYear.value) Then
+        mCurYear = CInt(cboYear.value)
         RefreshGrid
     End If
 End Sub

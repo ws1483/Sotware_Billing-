@@ -11,7 +11,7 @@ Private Const PRICELIST_SHEET As String = "Pricelist"
 Public Sub FillLinePrice(ws As Worksheet, ByVal r As Long)
     Dim desc As String, wsP As Worksheet, m As Variant
     If r < 16 Or r > 30 Then Exit Sub
-    desc = Trim(CStr(ws.Cells(r, 4).Value))
+    desc = Trim(CStr(ws.Cells(r, 4).value))
     If desc = "" Then ws.Cells(r, 7).ClearContents: Exit Sub   ' clear G (Incl)
 
     On Error GoTo Fail
@@ -21,7 +21,7 @@ Public Sub FillLinePrice(ws As Worksheet, ByVal r As Long)
         ws.Cells(r, 7).ClearContents
     Else
         ' col 7 = G = NewPriceIncl on Pricelist; write to G on the doc sheet
-        ws.Cells(r, 7).Value = Round(CDbl(wsP.Cells(CLng(m) + 1, 7).Value), 2)
+        ws.Cells(r, 7).value = Round(CDbl(wsP.Cells(CLng(m) + 1, 7).value), 2)
     End If
     Exit Sub
 Fail:

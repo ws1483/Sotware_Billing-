@@ -27,8 +27,8 @@ Public Sub ExportPDF()
     End Select
 
     ' 2. gather naming pieces
-    docNo = Trim(CStr(ws.Range("G7").Value))
-    patient = Trim(CStr(ws.Range("F14").Value))
+    docNo = Trim(CStr(ws.Range("G7").value))
+    patient = Trim(CStr(ws.Range("F14").value))
     If docNo = "" Then
         MsgBox "This document has no number yet — please Save it first.", vbExclamation
         Exit Sub
@@ -42,7 +42,7 @@ Public Sub ExportPDF()
     chosen = Application.GetSaveAsFilename( _
         InitialFileName:=suggested, _
         FileFilter:="PDF Files (*.pdf), *.pdf", _
-        Title:="Save PDF As")
+        title:="Save PDF As")
 
     If chosen = False Then Exit Sub          ' user cancelled
 
@@ -117,7 +117,7 @@ Public Sub PrintDoc()
     End Select
 
     ' 2. must be a saved doc
-    docNo = Trim(CStr(ws.Range("G7").Value))
+    docNo = Trim(CStr(ws.Range("G7").value))
     If docNo = "" Then
         MsgBox "This document has no number yet — please Save it first.", vbExclamation
         Exit Sub

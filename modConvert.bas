@@ -23,7 +23,7 @@ Public Sub ConvertQuoteToInvoice()
     Set wsILog = ThisWorkbook.Sheets("InvoiceLog")
 
     ' ---- 1. validate current quote ----
-    quoteNo = Trim(CStr(wsQ.Range("G7").Value))
+    quoteNo = Trim(CStr(wsQ.Range("G7").value))
     If quoteNo = "" Then
         MsgBox "No saved quote is displayed. Recall or Save a quote first.", vbExclamation
         Exit Sub
@@ -36,7 +36,7 @@ Public Sub ConvertQuoteToInvoice()
     End If
 
     ' ---- 2. block re-conversion ----
-    existingConv = Trim(CStr(wsQLog.Cells(qrow, QL_CONVINV_COL).Value))
+    existingConv = Trim(CStr(wsQLog.Cells(qrow, QL_CONVINV_COL).value))
     If existingConv <> "" Then
         MsgBox "This quote was already converted to " & existingConv & ".", vbExclamation
         Exit Sub
@@ -53,15 +53,15 @@ Public Sub ConvertQuoteToInvoice()
     NewInvoice                                   ' resets Invoice sheet + restores formulas
 
     ' header fields (same layout on both sheets)
-    wsI.Range("C6").Value = wsQ.Range("C6").Value      ' Bill-To / DrName
-    wsI.Range("C14").Value = wsQ.Range("C14").Value    ' Appliance Type
-    wsI.Range("D14").Value = wsQ.Range("D14").Value    ' Appliance Type (2nd cell / merged partner)
-    wsI.Range("F14").Value = wsQ.Range("F14").Value    ' Patient Name
+    wsI.Range("C6").value = wsQ.Range("C6").value      ' Bill-To / DrName
+    wsI.Range("C14").value = wsQ.Range("C14").value    ' Appliance Type
+    wsI.Range("D14").value = wsQ.Range("D14").value    ' Appliance Type (2nd cell / merged partner)
+    wsI.Range("F14").value = wsQ.Range("F14").value    ' Patient Name
 
     ' line items — A=Qty, D=Description, G=Price Incl (authoritative; E/F/H derive)
-    wsI.Range("A16:A30").Value = wsQ.Range("A16:A30").Value   ' Qty
-    wsI.Range("D16:D30").Value = wsQ.Range("D16:D30").Value   ' Description
-    wsI.Range("G16:G30").Value = wsQ.Range("G16:G30").Value   ' Price Incl (1B authoritative)
+    wsI.Range("A16:A30").value = wsQ.Range("A16:A30").value   ' Qty
+    wsI.Range("D16:D30").value = wsQ.Range("D16:D30").value   ' Description
+    wsI.Range("G16:G30").value = wsQ.Range("G16:G30").value   ' Price Incl (1B authoritative)
 
     ' options: dept, recipient, discounts (C32 %, C33 fixed)
     CopyIfExists wsQ, wsI, "K1"     ' Dept
@@ -77,15 +77,15 @@ Public Sub ConvertQuoteToInvoice()
     SaveInvoice
     gSuppressClearPrompt = False
 
-    newInv = Trim(CStr(wsI.Range("G7").Value))
+    newInv = Trim(CStr(wsI.Range("G7").value))
     If newInv = "" Then Err.Raise 513, , "Invoice number was not assigned by SaveInvoice."
 
     ' ---- 5. link both logs ----
     irow = FindLogRow(wsILog, newInv)
-    If irow > 0 Then wsILog.Cells(irow, IL_SRCQUOTE_COL).Value = quoteNo   ' Q SourceQuoteNo
+    If irow > 0 Then wsILog.Cells(irow, IL_SRCQUOTE_COL).value = quoteNo   ' Q SourceQuoteNo
 
-    wsQLog.Cells(qrow, QL_STATUS_COL).Value = "Converted"                  ' M Status
-    wsQLog.Cells(qrow, QL_CONVINV_COL).Value = newInv                      ' N ConvertedInvNo
+    wsQLog.Cells(qrow, QL_STATUS_COL).value = "Converted"                  ' M Status
+    wsQLog.Cells(qrow, QL_CONVINV_COL).value = newInv                      ' N ConvertedInvNo
 
     LogAudit "Convert", quoteNo, "", "-> " & newInv, "Quote converted to invoice"
     LogAudit "Convert", newInv, "", "<- " & quoteNo, "Invoice created from quote"
@@ -110,7 +110,7 @@ End Sub
 ' ---- copy a cell only if it exists / has a value ----
 Private Sub CopyIfExists(src As Worksheet, dst As Worksheet, addr As String)
     On Error Resume Next
-    dst.Range(addr).Value = src.Range(addr).Value
+    dst.Range(addr).value = src.Range(addr).value
     On Error GoTo 0
 End Sub
 

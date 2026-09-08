@@ -2,7 +2,7 @@ VERSION 1.0 CLASS
 BEGIN
   MultiUse = -1  'True
 END
-Attribute VB_Name = "Sheet3"
+Attribute VB_Name = "Sheet26"
 Attribute VB_GlobalNameSpace = False
 Attribute VB_Creatable = False
 Attribute VB_PredeclaredId = True
@@ -12,23 +12,24 @@ Option Explicit
 Private Sub Worksheet_Change(ByVal Target As Range)
     Dim isect As Range, c As Range
 
-    ' recipient toggle
-    If Not Application.Intersect(Target, Me.Range("K2")) Is Nothing Then
-        SetRecipientType Me, CStr(Me.Range("K2").value)
+    ' Bill To (C6) changed -> autofill patient + med-aid details
+    If Not Application.Intersect(Target, Me.Range("C6")) Is Nothing Then
+        MedClaimAutofill Me
         Exit Sub
     End If
 
-    ' patient-mode: Doctor picked (G12) -> auto-fill BHF (G13)
+    ' Treating Doctor (G12) picked -> auto-fill BHF (G13)
     If Not Application.Intersect(Target, Me.Range("G12")) Is Nothing Then
-        If LCase(Trim(CStr(Me.Range("K2").value))) = "patient" Then
-            Application.EnableEvents = False
-            Me.Range("G13").value = LookupBHFByDrName(CStr(Me.Range("G12").value))
-            Application.EnableEvents = True
-        End If
+        Dim bhf As String
+        bhf = LookupBHFByDrName(CStr(Me.Range("G12").value))
+        Application.EnableEvents = False
+        ' write to the merge-area anchor so merged G13:H13 accepts it
+        Me.Range("G13").MergeArea.Cells(1, 1).value = bhf
+        Application.EnableEvents = True
         Exit Sub
     End If
 
-    ' price auto-fill
+    ' price auto-fill on description entry (D16:D30)
     Set isect = Application.Intersect(Target, Me.Range("D16:D30"))
     If isect Is Nothing Then Exit Sub
     Application.EnableEvents = False
@@ -53,4 +54,3 @@ Private Sub Worksheet_BeforeDoubleClick(ByVal Target As Range, Cancel As Boolean
         End If
     End If
 End Sub
-

@@ -1,64 +1,77 @@
 Attribute VB_Name = "modRecipient"
 Option Explicit
 ' ============================================================================
-' modRecipient — Doctor/Private dynamic top-section for Quote & Invoice.
-'   Selector = K2 (Q_Recip / I_Recip), values "doctor" / "patient".
-'   Labels col F, values merged G:H (stored in G). CreditNote = doctor-only.
+' modRecipient ? Doctor/Private dynamic top-section for Quote, Invoice & CN.
+'   Selector = K2, values "doctor" / "patient".
+'   Labels col F, values merged G:H (stored in G).
+'   3C: CreditNote uses Invoice-style layout BUT keeps G11 = Source Invoice No,
+'       so CN Doctor/BHF (private mode) sit at G12/G13.
 ' ============================================================================
 
 Public Sub SetRecipientType(ws As Worksheet, ByVal mode As String)
-    Dim isInv As Boolean
+    Dim isInv As Boolean, isCN As Boolean
     mode = LCase(Trim(mode))
     If mode <> "patient" Then mode = "doctor"
-    isInv = (ws.Name = "Invoice")
+    isCN = (ws.Name = "CreditNote")
+    isInv = (ws.Name = "Invoice") Or isCN   ' CN uses Invoice-style layout
 
     Application.EnableEvents = False
     On Error GoTo Clean
-    ws.Range("K2").Value = mode
-    If mode = "doctor" Then ApplyDoctor ws, isInv Else ApplyPrivate ws, isInv
+    ws.Range("K2").value = mode
+    If mode = "doctor" Then ApplyDoctor ws, isInv, isCN Else ApplyPrivate ws, isInv, isCN
 Clean:
     Application.EnableEvents = True
 End Sub
 
-Private Sub ApplyDoctor(ws As Worksheet, isInv As Boolean)
+Private Sub ApplyDoctor(ws As Worksheet, isInv As Boolean, isCN As Boolean)
     RestoreLeftBlockFormulas ws
-    ws.Range("F8").Value = "Cust ID:"
-    ws.Range("F9").Value = "Vat No:"
-    ws.Range("F10").Value = "BHF No:"
-    If isInv Then ws.Range("F11").Value = "Due Date:" Else ClearCell ws, "F11"
+    ws.Range("F8").value = "Cust ID:"
+    ws.Range("F9").value = "Vat No:"
+    ws.Range("F10").value = "BHF No:"
+    If isInv And Not isCN Then ws.Range("F11").value = "Due Date:" Else ClearCell ws, "F11"
     ClearCell ws, "F12": ClearCell ws, "F13"
 
     SetFormula ws, "G8", "=IF($C$6="""","""",IFERROR(INDEX(Customers!$A$2:$A$1000,MATCH($C$6,Customers!$B$2:$B$1000,0)),""""))"
     SetFormula ws, "G9", "=IF($C$6="""","""",IFERROR(INDEX(Customers!$K$2:$K$1000,MATCH($C$6,Customers!$B$2:$B$1000,0)),""""))"
     SetFormula ws, "G10", "=IF($C$6="""","""",IFERROR(INDEX(Customers!$H$2:$H$1000,MATCH($C$6,Customers!$B$2:$B$1000,0)),""""))"
-    If isInv Then
+    If isInv And Not isCN Then
         SetFormula ws, "G11", "=IF(G6="""","""",IF(DAY(G6)>27,EOMONTH(G6,1),EOMONTH(G6,0)))"
-    Else
+    ElseIf Not isCN Then
         ClearCell ws, "G11"
     End If
+    ' isCN: leave G11 alone (it holds Source Invoice No)
     ClearCell ws, "G12": ClearCell ws, "G13"
     ClearValidation ws.Range("G9"): ClearValidation ws.Range("G10"): ClearValidation ws.Range("G13")
 End Sub
 
-Private Sub ApplyPrivate(ws As Worksheet, isInv As Boolean)
+Private Sub ApplyPrivate(ws As Worksheet, isInv As Boolean, isCN As Boolean)
     Dim drCell As String, bhfCell As String
     ClearLeftBlockToManual ws
-    ws.Range("F8").Value = "Med Aid:"
-    ws.Range("F9").Value = "Med No:"
-    ws.Range("F10").Value = "Main Mem:"
-    If isInv Then
-        ws.Range("F11").Value = "Due Date:"
-        ws.Range("F12").Value = "Doctor:"
-        ws.Range("F13").Value = "BHF:"
+    ws.Range("F8").value = "Med Aid:"
+    ws.Range("F9").value = "Med No:"
+    ws.Range("F10").value = "Main Mem:"
+
+    If isCN Then
+        ' CN: G11 stays = Source Invoice No; Doctor/BHF at G12/G13
+        ClearCell ws, "F11"
+        ws.Range("F12").value = "Doctor:"
+        ws.Range("F13").value = "BHF:"
+        drCell = "G12": bhfCell = "G13"
+    ElseIf isInv Then
+        ws.Range("F11").value = "Due Date:"
+        ws.Range("F12").value = "Doctor:"
+        ws.Range("F13").value = "BHF:"
         drCell = "G12": bhfCell = "G13"
         SetFormula ws, "G11", "=IF(G6="""","""",IF(DAY(G6)>27,EOMONTH(G6,1),EOMONTH(G6,0)))"
     Else
-        ws.Range("F11").Value = "Doctor:"
-        ws.Range("F12").Value = "BHF:"
+        ' Quote: no due date; doctor/BHF one row up
+        ws.Range("F11").value = "Doctor:"
+        ws.Range("F12").value = "BHF:"
         ClearCell ws, "F13"
         drCell = "G11": bhfCell = "G12"
         ClearCell ws, "G13"
     End If
+
     ClearCell ws, "G8": ClearCell ws, "G9": ClearCell ws, "G10"
     ClearCell ws, drCell: ClearCell ws, bhfCell
     AddListValidation ws.Range("G8"), "MedAidList"
@@ -85,7 +98,7 @@ Private Sub AddListValidation(rng As Range, listName As String)
     On Error Resume Next
     rng.Validation.Delete
     rng.Validation.Add Type:=xlValidateList, AlertStyle:=xlValidAlertStop, _
-        Operator:=xlBetween, Formula1:="=" & listName
+        Operator:=xlBetween, formula1:="=" & listName
     rng.Validation.IgnoreBlank = True
     rng.Validation.InCellDropdown = True
     On Error GoTo 0
@@ -96,6 +109,4 @@ Private Sub ClearValidation(rng As Range)
     rng.Validation.Delete
     On Error GoTo 0
 End Sub
-
-
 

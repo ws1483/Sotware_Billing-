@@ -1,43 +1,50 @@
 Attribute VB_Name = "modBackup"
 Option Explicit
 ' ============================================================================
-' modBackup — SaveCopyAs a timestamped copy (OneDrive-safe), keep newest 3.
-'   Navigation helpers included (full UI available — no hiding).
+' modBackup ? SaveCopyAs a timestamped copy (OneDrive-safe), keep newest 3.
+'   PHASE 0: backup folder is read from Settings!B21 if present; otherwise it
+'   falls back to the original hard-coded path. Navigation helpers unchanged.
 ' ============================================================================
-Private Const BACKUP_DIR As String = _
+Private Const BACKUP_DIR_FALLBACK As String = _
     "F:\One Drive\OneDrive\Documents\GreydataDental\Accounting\WeDental Billing\Backup"
 Private Const KEEP_COUNT As Long = 3
 
+' Resolve the backup folder: Settings!B21 override, else fallback constant.
+Private Function BackupDir() As String
+    Dim s As String
+    On Error Resume Next
+    s = Trim$(CStr(ThisWorkbook.Sheets("Settings").Range("B21").value))
+    On Error GoTo 0
+    If s = "" Then s = BACKUP_DIR_FALLBACK
+    BackupDir = s
+End Function
+
 Public Sub RunBackup()
-    Dim stamp As String, destPath As String
+    Dim stamp As String, destPath As String, dir As String
     Dim fso As Object
 
     On Error GoTo Fail
+    dir = BackupDir()
     Set fso = CreateObject("Scripting.FileSystemObject")
 
-    If Not fso.FolderExists(BACKUP_DIR) Then
-        fso.CreateFolder BACKUP_DIR
-        If Not fso.FolderExists(BACKUP_DIR) Then
-            MsgBox "Backup folder not found/creatable:" & vbCrLf & BACKUP_DIR, _
+    If Not fso.FolderExists(dir) Then
+        fso.CreateFolder dir
+        If Not fso.FolderExists(dir) Then
+            MsgBox "Backup folder not found/creatable:" & vbCrLf & dir, _
                    vbExclamation, "Backup"
             Exit Sub
         End If
     End If
 
-    ' save pending changes
     Application.DisplayAlerts = False
     ThisWorkbook.Save
     Application.DisplayAlerts = True
 
-    ' timestamped destination
     stamp = Format(Now, "yyyy-mm-dd_hhnn")
-    destPath = BACKUP_DIR & "\" & "WeDental_Backup_" & stamp & ".xlsm"
+    destPath = dir & "\" & "WeDental_Backup_" & stamp & ".xlsm"
 
-    ' SaveCopyAs works for OneDrive-synced workbooks (no https path issue)
     ThisWorkbook.SaveCopyAs destPath
-
-    ' prune old backups (keep newest KEEP_COUNT)
-    PruneBackups fso
+    PruneBackups fso, dir
 
     MsgBox "Backup created:" & vbCrLf & destPath & vbCrLf & vbCrLf & _
            "Keeping the latest " & KEEP_COUNT & " backups.", vbInformation, "Backup"
@@ -48,27 +55,29 @@ Fail:
            "Target: " & destPath, vbExclamation, "Backup"
 End Sub
 
-Private Sub PruneBackups(fso As Object)
+Private Sub PruneBackups(fso As Object, ByVal dir As String)
     Dim fld As Object, f As Object
     Dim names() As String, dates() As Double, n As Long, i As Long, j As Long
     Dim tS As String, tD As Double
 
-    Set fld = fso.GetFolder(BACKUP_DIR)
+    Set fld = fso.GetFolder(dir)
 
-    ' collect our backup files only
     n = 0
     ReDim names(1 To 1000)
     ReDim dates(1 To 1000)
     For Each f In fld.Files
-        If LCase(f.Name) Like "wedental_backup_*.xlsm" Then
+        If LCase$(f.Name) Like "wedental_backup_*.xlsm" Then
             n = n + 1
+            If n > UBound(names) Then
+                ReDim Preserve names(1 To UBound(names) + 1000)
+                ReDim Preserve dates(1 To UBound(dates) + 1000)
+            End If
             names(n) = f.Path
             dates(n) = CDbl(f.DateLastModified)
         End If
     Next f
     If n <= KEEP_COUNT Then Exit Sub
 
-    ' sort NEWEST first (descending by modified date)
     For i = 1 To n - 1
         For j = 1 To n - i
             If dates(j) < dates(j + 1) Then
@@ -78,7 +87,6 @@ Private Sub PruneBackups(fso As Object)
         Next j
     Next i
 
-    ' delete everything past KEEP_COUNT
     For i = KEEP_COUNT + 1 To n
         On Error Resume Next
         fso.DeleteFile names(i), True
@@ -86,7 +94,7 @@ Private Sub PruneBackups(fso As Object)
     Next i
 End Sub
 
-' ---- One-click "reset my view" safety button (single canonical copy) --------
+' ---- One-click "reset my view" safety button ----
 Sub ShowRibbon()
     On Error Resume Next
     Application.ExecuteExcel4Macro "SHOW.TOOLBAR(""Ribbon"",True)"
@@ -103,24 +111,17 @@ Sub ShowRibbon()
     MsgBox "Full view restored.", vbInformation
 End Sub
 
-' ===== Navigation (full UI available; simply jump to a sheet) =================
-
-' Go to the Menu sheet
+' ===== Navigation =====
 Public Sub GoToMenu()
     NavTo "Menu"
 End Sub
-
-' Go to the Quote sheet
 Public Sub GoToQuote()
     NavTo "Quote"
 End Sub
-
-' Go to the Invoice sheet
 Public Sub GoToInvoice()
     NavTo "Invoice"
 End Sub
 
-' Core navigation helper: activate the target sheet (no UI hiding).
 Private Sub NavTo(sheetName As String)
     Dim ws As Worksheet
     On Error GoTo Fail
@@ -131,6 +132,4 @@ Private Sub NavTo(sheetName As String)
 Fail:
     MsgBox "Cannot navigate to '" & sheetName & "'." & vbCrLf & Err.Description, vbExclamation
 End Sub
-
-
 

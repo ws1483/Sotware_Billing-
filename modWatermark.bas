@@ -13,7 +13,7 @@ Public Sub ShowInvoiceWatermark()
     Set ws = ThisWorkbook.Sheets("Invoice")
 
     RemoveInvoiceWatermark
-    status = InvoiceStatus(CStr(ws.Range("G7").Value))
+    status = InvoiceStatus(CStr(ws.Range("G7").value))
     If UCase(status) = "PAID" Then AddPaidStamp ws
 End Sub
 
@@ -65,7 +65,7 @@ Private Function InvoiceStatus(invNo As String) As String
     If Trim(invNo) = "" Then Exit Function
     Set wsLog = ThisWorkbook.Sheets("InvoiceLog")
     lr = FindLogRow(wsLog, invNo)
-    If lr > 0 Then InvoiceStatus = CStr(wsLog.Cells(lr, 16).Value)
+    If lr > 0 Then InvoiceStatus = CStr(wsLog.Cells(lr, 16).value)
 End Function
 
 

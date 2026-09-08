@@ -7,27 +7,27 @@ Attribute VB_GlobalNameSpace = False
 Attribute VB_Creatable = False
 Attribute VB_PredeclaredId = True
 Attribute VB_Exposed = True
-Private Sub Worksheet_Change(ByVal target As Range)
+Private Sub Worksheet_Change(ByVal Target As Range)
     Dim isect As Range, c As Range
 
     ' recipient toggle
-    If Not Application.Intersect(target, Me.Range("K2")) Is Nothing Then
-        SetRecipientType Me, CStr(Me.Range("K2").Value)
+    If Not Application.Intersect(Target, Me.Range("K2")) Is Nothing Then
+        SetRecipientType Me, CStr(Me.Range("K2").value)
         Exit Sub
     End If
 
     ' patient-mode: Doctor picked (G11) -> auto-fill BHF (G12)
-    If Not Application.Intersect(target, Me.Range("G11")) Is Nothing Then
-        If LCase(Trim(CStr(Me.Range("K2").Value))) = "patient" Then
+    If Not Application.Intersect(Target, Me.Range("G11")) Is Nothing Then
+        If LCase(Trim(CStr(Me.Range("K2").value))) = "patient" Then
             Application.EnableEvents = False
-            Me.Range("G12").Value = LookupBHFByDrName(CStr(Me.Range("G11").Value))
+            Me.Range("G12").value = LookupBHFByDrName(CStr(Me.Range("G11").value))
             Application.EnableEvents = True
         End If
         Exit Sub
     End If
 
     ' price auto-fill
-    Set isect = Application.Intersect(target, Me.Range("D16:D30"))
+    Set isect = Application.Intersect(Target, Me.Range("D16:D30"))
     If isect Is Nothing Then Exit Sub
     Application.EnableEvents = False
     On Error GoTo Clean

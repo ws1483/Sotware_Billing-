@@ -7,25 +7,16 @@ Attribute VB_GlobalNameSpace = False
 Attribute VB_Creatable = False
 Attribute VB_PredeclaredId = True
 Attribute VB_Exposed = True
-Option Explicit
-
-Private Sub Worksheet_Change(ByVal target As Range)
-    ' auto-refresh when any filter cell changes (incl. dept C5)
-    If Not Application.Intersect(target, Me.Range("B17,C17,E17,G17,I17,C5")) Is Nothing Then
-        RefreshMenuSummary
-    End If
-End Sub
-
-Private Sub Worksheet_BeforeDoubleClick(ByVal target As Range, Cancel As Boolean)
+Private Sub Worksheet_BeforeDoubleClick(ByVal Target As Range, Cancel As Boolean)
     ' ---- date pickers on filter cells B17 (From) / C17 (To) ----
-    If Not Application.Intersect(target, Me.Range("B17,C17")) Is Nothing Then
+    If Not Application.Intersect(Target, Me.Range("B17,C17")) Is Nothing Then
         Cancel = True
         Dim d As Variant
-        d = PickDate(target.Value)
+        d = PickDate(Target.value)
         If IsDate(d) Then
             Application.EnableEvents = False
-            target.Value = d
-            target.NumberFormat = "yyyy/mm/dd"
+            Target.value = d
+            Target.NumberFormat = "yyyy/mm/dd"
             Application.EnableEvents = True
             RefreshMenuSummary
         End If
@@ -33,18 +24,21 @@ Private Sub Worksheet_BeforeDoubleClick(ByVal target As Range, Cancel As Boolean
     End If
 
     ' ---- double-click Doc Number (col B) to open the doc ----
-    If target.Column <> 2 Then Exit Sub
+    If Target.Column <> 2 Then Exit Sub
     Dim n As String
-    n = Trim(CStr(target.Value))
+    n = Trim(CStr(Target.value))
     If n = "" Then Exit Sub
     If InStr(n, "--") > 0 Then Exit Sub                     ' ignore marker rows
 
-    If target.row >= 20 And target.row <= 44 Then           ' Quotes section
+    If Target.row >= 20 And Target.row <= 44 Then           ' Quotes section
         Cancel = True
         RecallQuote n
-    ElseIf target.row >= 46 And target.row <= 68 Then       ' Invoices section
+    ElseIf Target.row >= 46 And Target.row <= 68 Then       ' Invoices / Med Claims
         Cancel = True
-        RecallInvoice n
+        If InStr(1, UCase(n), "MC-INV-") > 0 Then
+            RecallMedClaim n
+        Else
+            RecallInvoice n
+        End If
     End If
 End Sub
-
