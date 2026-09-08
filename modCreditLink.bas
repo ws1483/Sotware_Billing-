@@ -106,9 +106,16 @@ Clean:
 End Sub
 
 ' Apply a credit-note amount against its source invoice (called on NEW CN only)
+' FIX: the portion of cnTotal that exceeds the invoice's outstanding balance
+'      ("excess") used to be silently dropped (only a free-text audit note),
+'      which destroyed real money. It is now routed to the customer's credit
+'      store (doctor -> Customers!L via AddDoctorCredit; patient -> the
+'      PatientCredits store via AddPatientCredit) so it is never lost and can
+'      be surfaced on a future statement.
 Public Sub ApplyCreditToInvoice(cnNo As String, srcInv As String, cnTotal As Double, payDate As Variant)
     Dim wsLog As Worksheet, wsPay As Worksheet, lr As Long
-    Dim paid As Double, total As Double, bal As Double, applied As Double, payID As String, r As Long
+    Dim paid As Double, total As Double, bal As Double, applied As Double, excess As Double
+    Dim payID As String, r As Long, recip As String, custID As String, patientName As String
     If cnTotal <= 0.005 Then Exit Sub
 
     Set wsLog = ThisWorkbook.Sheets("InvoiceLog")
@@ -119,38 +126,55 @@ Public Sub ApplyCreditToInvoice(cnNo As String, srcInv As String, cnTotal As Dou
     bal = Num(wsLog.Cells(lr, 15).value): If bal < 0 Then bal = 0
     applied = cnTotal
     If applied > bal Then applied = bal
+    excess = cnTotal - applied
+
+    recip = LCase$(Trim$(CStr(wsLog.Cells(lr, 3).value)))
+    custID = CStr(wsLog.Cells(lr, 6).value)
+    patientName = CStr(wsLog.Cells(lr, 7).value)
+
     If applied <= 0.005 Then
         LogAudit "CreditNote", srcInv, "", "Credit " & Format(cnTotal, "0.00"), _
-                 "CN " & cnNo & " exceeds balance; invoice already settled - no balance change"
-        Exit Sub
-    End If
-
-    payID = NextPaymentIDp()
-    r = wsPay.Cells(wsPay.Rows.Count, "A").End(xlUp).row + 1
-    wsPay.Cells(r, 1).value = payID
-    wsPay.Cells(r, 2).value = srcInv
-    wsPay.Cells(r, 3).value = payDate
-    wsPay.Cells(r, 4).value = applied
-    wsPay.Cells(r, 5).value = "Credit Note"
-    wsPay.Cells(r, 6).value = cnNo
-    wsPay.Cells(r, 7).value = "Auto credit from " & cnNo
-
-    paid = Num(wsLog.Cells(lr, 14).value) + applied
-    total = Num(wsLog.Cells(lr, 12).value)
-    bal = total - paid: If bal < 0 Then bal = 0
-    wsLog.Cells(lr, 14).value = paid
-    wsLog.Cells(lr, 15).value = bal
-    If bal <= 0.005 Then
-        wsLog.Cells(lr, 16).value = "Paid"
-    ElseIf paid > 0 Then
-        wsLog.Cells(lr, 16).value = "Part-Paid"
+                 "CN " & cnNo & " exceeds balance; invoice already settled - full amount -> credit store"
     Else
-        wsLog.Cells(lr, 16).value = "Unpaid"
-    End If
-    wsLog.Cells(lr, 19).value = Now
+        payID = NextPaymentIDp()
+        r = wsPay.Cells(wsPay.Rows.Count, "A").End(xlUp).row + 1
+        wsPay.Cells(r, 1).value = payID
+        wsPay.Cells(r, 2).value = srcInv
+        wsPay.Cells(r, 3).value = payDate
+        wsPay.Cells(r, 4).value = applied
+        wsPay.Cells(r, 5).value = "Credit Note"
+        wsPay.Cells(r, 6).value = cnNo
+        wsPay.Cells(r, 7).value = "Auto credit from " & cnNo
 
-    LogAudit "CreditNote", srcInv, "Bal " & Format(bal + applied, "0.00"), _
-             "Bal " & Format(bal, "0.00"), "CN " & cnNo & " applied (" & Format(applied, "0.00") & ")"
+        paid = Num(wsLog.Cells(lr, 14).value) + applied
+        total = Num(wsLog.Cells(lr, 12).value)
+        bal = total - paid: If bal < 0 Then bal = 0
+        wsLog.Cells(lr, 14).value = paid
+        wsLog.Cells(lr, 15).value = bal
+        If bal <= 0.005 Then
+            wsLog.Cells(lr, 16).value = "Paid"
+        ElseIf paid > 0 Then
+            wsLog.Cells(lr, 16).value = "Part-Paid"
+        Else
+            wsLog.Cells(lr, 16).value = "Unpaid"
+        End If
+        wsLog.Cells(lr, 19).value = Now
+
+        LogAudit "CreditNote", srcInv, "Bal " & Format(bal + applied, "0.00"), _
+                 "Bal " & Format(bal, "0.00"), "CN " & cnNo & " applied (" & Format(applied, "0.00") & ")"
+    End If
+
+    If excess > 0.005 Then
+        If recip = "doctor" Then
+            AddDoctorCredit custID, excess
+            LogAudit "CreditNote", srcInv, "", "Credit " & Format(excess, "0.00"), _
+                     "CN " & cnNo & " excess over balance -> doctor credit store"
+        Else
+            AddPatientCredit patientName, excess
+            LogAudit "CreditNote", srcInv, "", "Credit " & Format(excess, "0.00"), _
+                     "CN " & cnNo & " excess over balance -> patient credit store"
+        End If
+    End If
 End Sub
 
 Private Function NextPaymentIDp() As String

@@ -110,7 +110,7 @@ Private Sub AddDocs(logName As String, docType As String, term As String, deptF 
         If docType = "medclaim" Then
             drBill = Trim(CStr(ws.Cells(i, cCust).value))
         Else
-            If UCase(CStr(ws.Cells(i, cRecip).value)) = "PATIENT" Then
+            If LCase(Trim(CStr(ws.Cells(i, cRecip).value))) = "patient" Then
                 drBill = "(patient)"
             Else
                 drBill = CustIDToDrName(CStr(ws.Cells(i, cCust).value))

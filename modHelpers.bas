@@ -205,6 +205,56 @@ Public Sub AddDoctorCredit(custID As String, addAmt As Double)
         End If
     Next i
 End Sub
+
+' ============================ PATIENT (PRIVATE) CREDIT STORE ===============
+' Mirrors DoctorCredit/AddDoctorCredit (Customers col L) for private patients,
+' who have no row in Customers. Backed by a dedicated "PatientCredits" sheet
+' (A=PatientName, B=CreditAmount), auto-created on first use.
+Private Function EnsurePatientCreditsSheet() As Worksheet
+    Dim wsC As Worksheet
+    On Error Resume Next
+    Set wsC = ThisWorkbook.Sheets("PatientCredits")
+    On Error GoTo 0
+    If wsC Is Nothing Then
+        Set wsC = ThisWorkbook.Sheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count))
+        wsC.Name = "PatientCredits"
+        wsC.Range("A1").value = "PatientName"
+        wsC.Range("B1").value = "CreditAmount"
+    End If
+    Set EnsurePatientCreditsSheet = wsC
+End Function
+
+Public Function PatientCredit(patientName As String) As Double
+    Dim wsC As Worksheet, last As Long, i As Long, key As String
+    If Trim$(patientName) = "" Then Exit Function
+    Set wsC = EnsurePatientCreditsSheet()
+    key = NrmID(patientName)
+    last = wsC.Cells(wsC.Rows.Count, "A").End(xlUp).row
+    For i = 2 To last
+        If NrmID(CStr(wsC.Cells(i, "A").value)) = key Then
+            PatientCredit = Num(wsC.Cells(i, "B").value)
+            Exit Function
+        End If
+    Next i
+End Function
+
+Public Sub AddPatientCredit(patientName As String, addAmt As Double)
+    Dim wsC As Worksheet, last As Long, i As Long, key As String, r As Long
+    If Trim$(patientName) = "" Then Exit Sub
+    If Abs(addAmt) <= 0.005 Then Exit Sub
+    Set wsC = EnsurePatientCreditsSheet()
+    key = NrmID(patientName)
+    last = wsC.Cells(wsC.Rows.Count, "A").End(xlUp).row
+    For i = 2 To last
+        If NrmID(CStr(wsC.Cells(i, "A").value)) = key Then
+            wsC.Cells(i, "B").value = Num(wsC.Cells(i, "B").value) + addAmt
+            Exit Sub
+        End If
+    Next i
+    r = last + 1: If r < 2 Then r = 2
+    wsC.Cells(r, "A").value = patientName
+    wsC.Cells(r, "B").value = addAmt
+End Sub
 Public Function Num(v As Variant) As Double
     If IsError(v) Then
         Num = 0

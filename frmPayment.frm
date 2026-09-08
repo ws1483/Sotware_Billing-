@@ -162,7 +162,7 @@ Private Sub AddDocsFromLog(logName As String, docType As String, term As String,
         If docType = "medclaim" Then
             drBill = Trim(CStr(ws.Cells(i, cCust).value))
         Else
-            If UCase(CStr(ws.Cells(i, cRecip).value)) = "PATIENT" Then
+            If LCase(Trim(CStr(ws.Cells(i, cRecip).value))) = "patient" Then
                 drBill = "(patient)"
             Else
                 drBill = CustIDToDrName(CStr(ws.Cells(i, cCust).value))
@@ -216,7 +216,7 @@ Private Sub PopulateNames(kind As String)
         Set ws = ThisWorkbook.Sheets("InvoiceLog")
         last = ws.Cells(ws.Rows.Count, "A").End(xlUp).row
         For i = 2 To last
-            If UCase(CStr(ws.Cells(i, IL_RECIP).value)) = "PATIENT" Then
+            If LCase(Trim(CStr(ws.Cells(i, IL_RECIP).value))) = "patient" Then
                 nm = Trim(CStr(ws.Cells(i, IL_PATIENT).value))
                 If nm <> "" And Not seen.Exists(UCase(nm)) Then
                     seen.Add UCase(nm), 1
@@ -266,10 +266,10 @@ Private Sub RefreshSweepPreview()
         isMatch = False
         If kind = "doctor" Then
             If NrmID(CStr(ws.Cells(i, IL_CUST).value)) = NrmID(cid) _
-               And UCase(CStr(ws.Cells(i, IL_RECIP).value)) = "DOCTOR" Then isMatch = True
+               And LCase(Trim(CStr(ws.Cells(i, IL_RECIP).value))) = "doctor" Then isMatch = True
         Else
             If UCase(Trim(CStr(ws.Cells(i, IL_PATIENT).value))) = UCase(Trim(targetVal)) _
-               And UCase(CStr(ws.Cells(i, IL_RECIP).value)) = "PATIENT" Then isMatch = True
+               And LCase(Trim(CStr(ws.Cells(i, IL_RECIP).value))) = "patient" Then isMatch = True
         End If
         If Not isMatch Then GoTo NextI
 
@@ -425,10 +425,10 @@ Private Sub PaySweep(kind As String, targetVal As String, amt As Double, payDate
         isMatch = False
         If kind = "doctor" Then
             If NrmID(CStr(wsLog.Cells(i, IL_CUST).value)) = NrmID(cid) _
-               And UCase(CStr(wsLog.Cells(i, IL_RECIP).value)) = "DOCTOR" Then isMatch = True
+               And LCase(Trim(CStr(wsLog.Cells(i, IL_RECIP).value))) = "doctor" Then isMatch = True
         Else
             If UCase(Trim(CStr(wsLog.Cells(i, IL_PATIENT).value))) = UCase(Trim(targetVal)) _
-               And UCase(CStr(wsLog.Cells(i, IL_RECIP).value)) = "PATIENT" Then isMatch = True
+               And LCase(Trim(CStr(wsLog.Cells(i, IL_RECIP).value))) = "patient" Then isMatch = True
         End If
 
         ' dept filter
@@ -469,15 +469,21 @@ Private Sub PaySweep(kind As String, targetVal As String, amt As Double, payDate
         End If
     Next i
 
+    ' AUDIT FIX: private patients now have a credit store (PatientCredits
+    ' sheet via AddPatientCredit, modHelpers.bas) so an overpayment is no
+    ' longer only a MsgBox + free-text audit note - it is banked and will be
+    ' surfaced/subtracted on that patient's next statement, at parity with
+    ' the doctor credit store (Customers!L).
     If remaining > 0.005 Then
         If kind = "doctor" Then
             AddDoctorCredit cid, remaining
             LogAudit "Credit", cid, "", "Credit " & Format(remaining, "0.00"), "Overpay " & payID
             MsgBox "Overpayment of R " & Format(remaining, "#,##0.00") & " added to doctor credit.", vbInformation
         Else
+            AddPatientCredit targetVal, remaining
+            LogAudit "Credit", targetVal, "", "Credit " & Format(remaining, "0.00"), "Overpay " & payID
             MsgBox "Overpayment of R " & Format(remaining, "#,##0.00") & " for '" & targetVal & "'." & vbCrLf & _
-                   "No credit store for private patients ? refund manually.", vbExclamation
-            LogAudit "Overpay", targetVal, "", "Excess " & Format(remaining, "0.00"), "Private overpay " & payID
+                   "Added to patient credit store; will be applied on their next statement.", vbInformation
         End If
     End If
 End Sub
@@ -511,7 +517,7 @@ Private Function SumOutstandingByCust(custID As String) As Double
     last = ws.Cells(ws.Rows.Count, "A").End(xlUp).row
     For i = 2 To last
         If NrmID(CStr(ws.Cells(i, IL_CUST).value)) = NrmID(custID) _
-           And UCase(CStr(ws.Cells(i, IL_RECIP).value)) = "DOCTOR" Then
+           And LCase(Trim(CStr(ws.Cells(i, IL_RECIP).value))) = "doctor" Then
             t = t + Num(ws.Cells(i, IL_BALANCE).value)
         End If
     Next i
@@ -524,7 +530,7 @@ Private Function SumOutstandingByPatient(pName As String) As Double
     last = ws.Cells(ws.Rows.Count, "A").End(xlUp).row
     For i = 2 To last
         If UCase(Trim(CStr(ws.Cells(i, IL_PATIENT).value))) = UCase(Trim(pName)) _
-           And UCase(CStr(ws.Cells(i, IL_RECIP).value)) = "PATIENT" Then
+           And LCase(Trim(CStr(ws.Cells(i, IL_RECIP).value))) = "patient" Then
             t = t + Num(ws.Cells(i, IL_BALANCE).value)
         End If
     Next i

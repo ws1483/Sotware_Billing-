@@ -8,7 +8,33 @@ Option Explicit
 '  - unambiguous header dates (yyyy-mm-dd)
 ' PHASE 3B: patient statements fold in MED CLAIMS (MedAidLog) by patient name,
 '           header autofills from "Med Customers"; A5="Main Member", A6="Patient Name".
-Private Const VAT_RATE As Double = 0.15
+' AUDIT FIX PATCHES (financial-correctness audit):
+'  - Opening balance for pre-range invoices/med-claims is now computed as
+'    (total - payments dated strictly before dFrom) instead of reusing the
+'    "as of today" InvoiceLog/MedAidLog balance column, which was already net
+'    of in-range payments/credit notes and caused a double-subtraction.
+'  - Credit-note ("Credit Note") rows are now labelled distinctly from cash
+'    payments and tracked in a separate totalCreditApplied accumulator; the
+'    displayed Credit total is storedCredit + totalCreditApplied, which is
+'    purely additive/informational and does not double-count against balDue
+'    (balDue only ever subtracts storedCredit, since in-range credit notes are
+'    already netted into `running` exactly once, same as a cash payment).
+'  - VAT rate is read from the workbook's central "VATRate" named range
+'    (falls back to 0.15 only if the name is missing) instead of a hardcoded
+'    private constant duplicated between the doctor and patient code paths.
+'  - Aging buckets are now bounded by dTo and computed as balance-as-of-dTo
+'    (total - payments dated <= dTo), instead of summing today's live balance
+'    for every matching row regardless of date, which could include
+'    future-dated invoices or payments made after the statement cutoff.
+'  - balDue/grossOut are no longer floored to zero: a genuine credit balance
+'    (overpayment / unapplied credit notes) is now surfaced as a negative
+'    balance due instead of being silently displayed as R0.00.
+'  - Recipient-type ("doctor"/"patient") comparisons are standardized to
+'    LCase(Trim(...)) everywhere, matching whitespace/case-insensitive.
+'  - DeptMatch now matches an anchored "-DEPT-" segment instead of a raw
+'    substring, avoiding false positives against unrelated numbering schemes.
+'  - FindLogRow/FindMCRow are guarded against cross-collisions between
+'    InvoiceLog and MedAidLog document numbers.
 Private Const LINES_PER_PAGE As Long = 20
 Private Const FIRST_LINE_ROW As Long = 13
 Private Const TOTALS_ORIG_ROW As Long = 19
@@ -17,6 +43,7 @@ Private Const FOOTER_LAST_ROW As Long = 36
 Private Const TPL_SHEET As String = "StatementTpl"
 Private Const OUT_SHEET As String = "Statement"
 Private Const LOG_SHEET As String = "StatementLog"
+Private Const DEFAULT_VAT_RATE As Double = 0.15
 
 Private Function NrmID(s As String) As String
     NrmID = UCase(Replace(Trim(s), " ", ""))
@@ -27,6 +54,42 @@ Private Function Num(v As Variant) As Double
     If IsError(v) Then Num = 0: Exit Function
     If Trim(CStr(v)) = "" Then Num = 0: Exit Function
     If IsNumeric(v) Then Num = CDbl(v) Else Num = 0
+End Function
+
+' Central VAT rate: reads the workbook's "VATRate" named range (the same one
+' used by modReset.bas/invoice sheets) so statements never disagree with the
+' rate actually used to invoice. Falls back to DEFAULT_VAT_RATE only if the
+' named range is missing.
+Private Function CurrentVATRate() As Double
+    Dim v As Variant
+    On Error Resume Next
+    v = ThisWorkbook.Names("VATRate").RefersToRange.value
+    On Error GoTo 0
+    If IsNumeric(v) Then
+        CurrentVATRate = CDbl(v)
+    Else
+        CurrentVATRate = DEFAULT_VAT_RATE
+    End If
+End Function
+
+' Sum of Payments (col 4) posted against docNo (col 2), for rows dated on or
+' before cutoff. Used to derive a balance "as of" a given date instead of
+' relying on the live InvoiceLog/MedAidLog balance column, which nets every
+' payment/credit ever posted regardless of date.
+Private Function PaymentsAsOf(wsPay As Worksheet, docNo As String, cutoff As Date) As Double
+    Dim last As Long, i As Long, s As Double, key As String
+    key = NrmID(docNo)
+    last = wsPay.Cells(wsPay.Rows.Count, "A").End(xlUp).row
+    For i = 2 To last
+        If NrmID(CStr(wsPay.Cells(i, 2).value)) = key Then
+            If IsDate(wsPay.Cells(i, 3).value) Then
+                If CDate(wsPay.Cells(i, 3).value) <= cutoff Then
+                    s = s + Num(wsPay.Cells(i, 4).value)
+                End If
+            End If
+        End If
+    Next i
+    PaymentsAsOf = s
 End Function
 
 Public Sub GenStatement()
@@ -242,22 +305,22 @@ Private Function BuildAndRender(drName As String, dFrom As Date, dTo As Date, _
                                ByRef outBalDue As Double) As Worksheet
     Dim ws As Worksheet, wsLog As Worksheet, wsPay As Worksheet
     Dim custID As String, last As Long, i As Long, j As Long
-    Dim opening As Double, credit As Double
+    Dim opening As Double, storedCredit As Double
     Dim rowsArr() As Long, dts() As Double, kinds() As String, cnt As Long
     Dim tL As Long, tD As Double, tS As String
     Dim r As Long, running As Double
-    Dim totalInv As Double, totalPaid As Double
+    Dim totalInv As Double, totalPaid As Double, totalCreditApplied As Double
     Dim ageCur As Double, age30 As Double, age60 As Double, age90 As Double
     Dim bal As Double, dueD As Date, days As Long
     Dim invDate As Date, invTotal As Double, invBal As Double
-    Dim lastP As Long, pInv As String, pDate As Date, pAmt As Double, logRow As Long
+    Dim lastP As Long, pInv As String, pDate As Date, pAmt As Double, pKind As String, logRow As Long
 
     Set ws = ResetStatementSheet()
     Set wsLog = ThisWorkbook.Sheets("InvoiceLog")
     Set wsPay = ThisWorkbook.Sheets("Payments")
     custID = DrNameToCustIDp(drName)
     outCustID = custID
-    credit = DoctorCreditp(custID)
+    storedCredit = DoctorCreditp(custID)
     RenderStatementHeader ws, drName, custID, dFrom, dTo, dept
 
     last = wsLog.Cells(wsLog.Rows.Count, "A").End(xlUp).row
@@ -267,13 +330,19 @@ Private Function BuildAndRender(drName As String, dFrom As Date, dTo As Date, _
     cnt = 0: opening = 0
 
     ' ---- invoices ----
+    ' AUDIT FIX: opening balance for pre-range invoices is (total - payments
+    ' dated < dFrom), NOT the live InvoiceLog balance (col 15), which is net
+    ' of every payment/credit-note posted to date. Using the live balance
+    ' double-subtracted any in-range payment/credit note against a pre-range
+    ' invoice (it was already reflected in `opening`, then subtracted again
+    ' by the in-range "PAY" line below).
     For i = 2 To last
         If NrmID(CStr(wsLog.Cells(i, 6).value)) = NrmID(custID) _
-           And UCase(CStr(wsLog.Cells(i, 3).value)) = "DOCTOR" _
+           And LCase(Trim(CStr(wsLog.Cells(i, 3).value))) = "doctor" _
            And DeptMatch(CStr(wsLog.Cells(i, 1).value), dept) Then
             invDate = CDate(wsLog.Cells(i, 4).value)
-            invBal = Num(wsLog.Cells(i, 15).value)
             If invDate < dFrom Then
+                invBal = Num(wsLog.Cells(i, 12).value) - PaymentsAsOf(wsPay, CStr(wsLog.Cells(i, 1).value), dFrom - 1)
                 opening = opening + invBal
             ElseIf invDate <= dTo Then
                 cnt = cnt + 1: rowsArr(cnt) = i: dts(cnt) = CDbl(invDate): kinds(cnt) = "INV"
@@ -281,14 +350,14 @@ Private Function BuildAndRender(drName As String, dFrom As Date, dTo As Date, _
         End If
     Next i
 
-    ' ---- payments ----
+    ' ---- payments (cash and credit notes alike; kind is tracked separately) ----
     lastP = wsPay.Cells(wsPay.Rows.Count, "A").End(xlUp).row
     For i = 2 To lastP
         pInv = CStr(wsPay.Cells(i, 2).value)
         logRow = FindLogRow(wsLog, pInv)
         If logRow > 0 Then
             If NrmID(CStr(wsLog.Cells(logRow, 6).value)) = NrmID(custID) _
-               And UCase(CStr(wsLog.Cells(logRow, 3).value)) = "DOCTOR" _
+               And LCase(Trim(CStr(wsLog.Cells(logRow, 3).value))) = "doctor" _
                And DeptMatch(pInv, dept) Then
                 pDate = CDate(wsPay.Cells(i, 3).value)
                 If pDate >= dFrom And pDate <= dTo Then
@@ -298,7 +367,7 @@ Private Function BuildAndRender(drName As String, dFrom As Date, dTo As Date, _
         End If
     Next i
 
-    If cnt = 0 And Abs(opening) < 0.005 And credit < 0.005 Then
+    If cnt = 0 And Abs(opening) < 0.005 And Abs(storedCredit) < 0.005 Then
         lastContentRow = 0: Set BuildAndRender = ws: Exit Function
     End If
 
@@ -330,7 +399,7 @@ Private Function BuildAndRender(drName As String, dFrom As Date, dTo As Date, _
     ws.Cells(r, 8).value = running
     r = r + 1
 
-    totalInv = 0: totalPaid = 0
+    totalInv = 0: totalPaid = 0: totalCreditApplied = 0
     For i = 1 To cnt
         If kinds(i) = "INV" Then
             invTotal = Num(wsLog.Cells(rowsArr(i), 12).value)
@@ -344,11 +413,17 @@ Private Function BuildAndRender(drName As String, dFrom As Date, dTo As Date, _
             ws.Cells(r, 8).value = running
         Else
             pAmt = Num(wsPay.Cells(rowsArr(i), 4).value)
+            pKind = Trim(CStr(wsPay.Cells(rowsArr(i), 5).value))
             running = running - pAmt
-            totalPaid = totalPaid + pAmt
+            If LCase(pKind) = "credit note" Then
+                totalCreditApplied = totalCreditApplied + pAmt
+                ws.Cells(r, 3).value = "Credit Note - " & wsPay.Cells(rowsArr(i), 2).value
+            Else
+                totalPaid = totalPaid + pAmt
+                ws.Cells(r, 3).value = "Payment - " & wsPay.Cells(rowsArr(i), 2).value
+            End If
             ws.Cells(r, 1).value = Format(CDate(wsPay.Cells(rowsArr(i), 3).value), "dd/mm/yyyy")
             ws.Cells(r, 2).value = wsPay.Cells(rowsArr(i), 1).value
-            ws.Cells(r, 3).value = "Payment - " & wsPay.Cells(rowsArr(i), 2).value
             ws.Cells(r, 6).value = pAmt
             ws.Cells(r, 8).value = running
         End If
@@ -356,37 +431,57 @@ Private Function BuildAndRender(drName As String, dFrom As Date, dTo As Date, _
     Next i
 
     ' ---- aging ----
+    ' AUDIT FIX: bounded to invoices dated on/before dTo, and uses the balance
+    ' as of dTo (total - payments dated <= dTo) rather than the live "as of
+    ' today" InvoiceLog balance. Previously this included future-dated
+    ' invoices (never shown in the body/balDue) and excluded payments/credits
+    ' posted after dTo (already netted into col 15 "today"), so the aging
+    ' total could diverge from balDue in either direction.
     ageCur = 0: age30 = 0: age60 = 0: age90 = 0
     For i = 2 To last
         If NrmID(CStr(wsLog.Cells(i, 6).value)) = NrmID(custID) _
-           And UCase(CStr(wsLog.Cells(i, 3).value)) = "DOCTOR" _
+           And LCase(Trim(CStr(wsLog.Cells(i, 3).value))) = "doctor" _
            And DeptMatch(CStr(wsLog.Cells(i, 1).value), dept) Then
-            bal = Num(wsLog.Cells(i, 15).value)
-            If bal > 0.005 Then
-                If IsDate(wsLog.Cells(i, 5).value) Then
-                    dueD = CDate(wsLog.Cells(i, 5).value)
-                Else
-                    dueD = CDate(wsLog.Cells(i, 4).value)
-                End If
-                days = CLng(dTo - dueD)
-                If days <= 0 Then
-                    ageCur = ageCur + bal
-                ElseIf days <= 30 Then
-                    age30 = age30 + bal
-                ElseIf days <= 60 Then
-                    age60 = age60 + bal
-                Else
-                    age90 = age90 + bal
+            invDate = CDate(wsLog.Cells(i, 4).value)
+            If invDate <= dTo Then
+                bal = Num(wsLog.Cells(i, 12).value) - PaymentsAsOf(wsPay, CStr(wsLog.Cells(i, 1).value), dTo)
+                If bal > 0.005 Then
+                    If IsDate(wsLog.Cells(i, 5).value) Then
+                        dueD = CDate(wsLog.Cells(i, 5).value)
+                    Else
+                        dueD = invDate
+                    End If
+                    days = CLng(dTo - dueD)
+                    If days <= 0 Then
+                        ageCur = ageCur + bal
+                    ElseIf days <= 30 Then
+                        age30 = age30 + bal
+                    ElseIf days <= 60 Then
+                        age60 = age60 + bal
+                    Else
+                        age90 = age90 + bal
+                    End If
                 End If
             End If
         End If
     Next i
 
-    Dim grossOut As Double, balDue As Double, excl As Double, vat As Double
-    grossOut = running: If grossOut < 0 Then grossOut = 0
-    credit = Round(credit, 2)
-    balDue = Round(grossOut - credit, 2): If balDue < 0 Then balDue = 0
-    excl = Round(balDue / (1 + VAT_RATE), 2)
+    ' AUDIT FIX: balDue/grossOut are no longer floored to zero - a true credit
+    ' balance (overpayment / unapplied credit notes) is now surfaced as a
+    ' negative amount instead of being silently displayed as R0.00. The
+    ' displayed Credit total is storedCredit + totalCreditApplied: this is
+    ' purely informational (does not feed balDue beyond storedCredit) since
+    ' in-range credit notes were already netted into `running` exactly once,
+    ' the same way a cash payment is.
+    Dim grossOut As Double, balDue As Double, excl As Double, vat As Double, credit As Double
+    Dim vatRate As Double
+    vatRate = CurrentVATRate()
+    grossOut = running
+    storedCredit = Round(storedCredit, 2)
+    totalCreditApplied = Round(totalCreditApplied, 2)
+    credit = Round(storedCredit + totalCreditApplied, 2)
+    balDue = Round(grossOut - storedCredit, 2)
+    excl = Round(balDue / (1 + vatRate), 2)
     vat = Round(balDue - excl, 2)
     totalInv = Round(totalInv, 2)
     totalPaid = Round(totalPaid, 2)
@@ -494,8 +589,14 @@ Private Function ExportStatementPDF(ws As Worksheet, drName As String, dFrom As 
 End Function
 
 ' ============================ QUERIES / HELPERS ===========================
+' AUDIT FIX: guarded against InvoiceLog/MedAidLog document-number collisions.
+' Invoice/CN numbers use the "INV-"/"CN-" prefixes; med-claim numbers always
+' use "MC-". Rejecting an obviously-mismatched prefix early prevents a
+' payment row from ever being matched to both a doctor invoice and an
+' unrelated med-claim (which would double count it across two statements).
 Private Function FindLogRow(wsLog As Worksheet, invNo As String) As Long
     Dim last As Long, i As Long
+    If Left(UCase(Trim(invNo)), 3) = "MC-" Then Exit Function
     last = wsLog.Cells(wsLog.Rows.Count, "A").End(xlUp).row
     For i = 2 To last
         If NrmID(CStr(wsLog.Cells(i, 1).value)) = NrmID(invNo) Then FindLogRow = i: Exit Function
@@ -505,15 +606,21 @@ End Function
 ' Find a MedAidLog row by MC number (col A); 0 if not found
 Private Function FindMCRow(wsMC As Worksheet, mcNo As String) As Long
     Dim last As Long, i As Long
+    If Left(UCase(Trim(mcNo)), 3) <> "MC-" Then Exit Function
     last = wsMC.Cells(wsMC.Rows.Count, "A").End(xlUp).row
     For i = 2 To last
         If NrmID(CStr(wsMC.Cells(i, 1).value)) = NrmID(mcNo) Then FindMCRow = i: Exit Function
     Next i
 End Function
 
+' AUDIT FIX: anchored match on a "-DEPT-" segment instead of a raw substring
+' search, so a dept code can never false-positive against an unrelated
+' substring elsewhere in the document number.
 Private Function DeptMatch(invNo As String, dept As String) As Boolean
+    Dim s As String, d As String
     If UCase(dept) = "ALL" Or dept = "" Then DeptMatch = True: Exit Function
-    DeptMatch = (InStr(1, UCase(invNo), UCase(dept)) > 0)
+    s = UCase(invNo): d = UCase(dept)
+    DeptMatch = (InStr(1, s, "-" & d & "-") > 0)
 End Function
 
 Private Function StmtDoctorsWithBalance(dept As String) As Collection
@@ -523,7 +630,7 @@ Private Function StmtDoctorsWithBalance(dept As String) As Collection
     Set ws = ThisWorkbook.Sheets("InvoiceLog")
     last = ws.Cells(ws.Rows.Count, "A").End(xlUp).row
     For i = 2 To last
-        If UCase(CStr(ws.Cells(i, 3).value)) = "DOCTOR" _
+        If LCase(Trim(CStr(ws.Cells(i, 3).value))) = "doctor" _
            And DeptMatch(CStr(ws.Cells(i, 1).value), dept) Then
             If Num(ws.Cells(i, 15).value) > 0.005 Then
                 custID = CStr(ws.Cells(i, 6).value)
@@ -805,15 +912,15 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
                                        ByRef outBalDue As Double) As Worksheet
     Dim ws As Worksheet, wsLog As Worksheet, wsPay As Worksheet, wsMC As Worksheet
     Dim last As Long, lastMC As Long, i As Long, j As Long
-    Dim opening As Double
+    Dim opening As Double, storedCredit As Double
     Dim rowsArr() As Long, dts() As Double, kinds() As String, cnt As Long
     Dim tL As Long, tD As Double, tS As String
     Dim r As Long, running As Double
-    Dim totalInv As Double, totalPaid As Double
+    Dim totalInv As Double, totalPaid As Double, totalCreditApplied As Double
     Dim ageCur As Double, age30 As Double, age60 As Double, age90 As Double
     Dim bal As Double, dueD As Date, days As Long
     Dim invDate As Date, invTotal As Double, invBal As Double
-    Dim lastP As Long, pInv As String, pDate As Date, pAmt As Double, logRow As Long
+    Dim lastP As Long, pInv As String, pDate As Date, pAmt As Double, pKind As String, logRow As Long
     Dim mcDate As Date, mcBal As Double, mcRow As Long
 
     Set ws = ResetStatementSheet()
@@ -832,15 +939,18 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
     ReDim dts(1 To (last + lastMC + 100) * 2)
     ReDim kinds(1 To (last + lastMC + 100) * 2)
     cnt = 0: opening = 0
+    storedCredit = PatientCredit(patientName)
 
     ' ---- invoices (patient + name match) ----
+    ' AUDIT FIX: same opening-balance fix as the doctor path - see
+    ' BuildAndRender for the full rationale.
     For i = 2 To last
         If LCase(Trim(CStr(wsLog.Cells(i, 3).value))) = "patient" _
            And NrmID(CStr(wsLog.Cells(i, 7).value)) = NrmID(patientName) _
            And DeptMatch(CStr(wsLog.Cells(i, 1).value), dept) Then
             invDate = CDate(wsLog.Cells(i, 4).value)
-            invBal = Num(wsLog.Cells(i, 15).value)
             If invDate < dFrom Then
+                invBal = Num(wsLog.Cells(i, 12).value) - PaymentsAsOf(wsPay, CStr(wsLog.Cells(i, 1).value), dFrom - 1)
                 opening = opening + invBal
             ElseIf invDate <= dTo Then
                 cnt = cnt + 1: rowsArr(cnt) = i: dts(cnt) = CDbl(invDate): kinds(cnt) = "INV"
@@ -854,8 +964,8 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
             If NrmID(CStr(wsMC.Cells(i, ML_PATIENT).value)) = NrmID(patientName) Then
                 If IsDate(wsMC.Cells(i, ML_DATE).value) Then
                     mcDate = CDate(wsMC.Cells(i, ML_DATE).value)
-                    mcBal = Num(wsMC.Cells(i, ML_BALANCE).value)
                     If mcDate < dFrom Then
+                        mcBal = Num(wsMC.Cells(i, ML_TOTAL).value) - PaymentsAsOf(wsPay, CStr(wsMC.Cells(i, ML_NO).value), dFrom - 1)
                         opening = opening + mcBal
                     ElseIf mcDate <= dTo Then
                         cnt = cnt + 1: rowsArr(cnt) = i
@@ -900,7 +1010,7 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
         Next i
     End If
 
-    If cnt = 0 And Abs(opening) < 0.005 Then
+    If cnt = 0 And Abs(opening) < 0.005 And Abs(storedCredit) < 0.005 Then
         lastContentRow = 0: Set BuildAndRenderPatient = ws: Exit Function
     End If
 
@@ -932,7 +1042,7 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
     ws.Cells(r, 8).value = running
     r = r + 1
 
-    totalInv = 0: totalPaid = 0
+    totalInv = 0: totalPaid = 0: totalCreditApplied = 0
     For i = 1 To cnt
         If kinds(i) = "INV" Then
             invTotal = Num(wsLog.Cells(rowsArr(i), 12).value)
@@ -955,11 +1065,17 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
             ws.Cells(r, 8).value = running
         Else
             pAmt = Num(wsPay.Cells(rowsArr(i), 4).value)
+            pKind = Trim(CStr(wsPay.Cells(rowsArr(i), 5).value))
             running = running - pAmt
-            totalPaid = totalPaid + pAmt
+            If LCase(pKind) = "credit note" Then
+                totalCreditApplied = totalCreditApplied + pAmt
+                ws.Cells(r, 3).value = "Credit Note - " & wsPay.Cells(rowsArr(i), 2).value
+            Else
+                totalPaid = totalPaid + pAmt
+                ws.Cells(r, 3).value = "Payment - " & wsPay.Cells(rowsArr(i), 2).value
+            End If
             ws.Cells(r, 1).value = Format(CDate(wsPay.Cells(rowsArr(i), 3).value), "dd/mm/yyyy")
             ws.Cells(r, 2).value = wsPay.Cells(rowsArr(i), 1).value
-            ws.Cells(r, 3).value = "Payment - " & wsPay.Cells(rowsArr(i), 2).value
             ws.Cells(r, 6).value = pAmt
             ws.Cells(r, 8).value = running
         End If
@@ -967,44 +1083,21 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
     Next i
 
     ' ---- aging: invoices ----
+    ' AUDIT FIX: bounded to dTo and computed as balance-as-of-dTo, matching
+    ' the doctor path (see BuildAndRender for rationale).
     ageCur = 0: age30 = 0: age60 = 0: age90 = 0
     For i = 2 To last
         If LCase(Trim(CStr(wsLog.Cells(i, 3).value))) = "patient" _
            And NrmID(CStr(wsLog.Cells(i, 7).value)) = NrmID(patientName) _
            And DeptMatch(CStr(wsLog.Cells(i, 1).value), dept) Then
-            bal = Num(wsLog.Cells(i, 15).value)
-            If bal > 0.005 Then
-                If IsDate(wsLog.Cells(i, 5).value) Then
-                    dueD = CDate(wsLog.Cells(i, 5).value)
-                Else
-                    dueD = CDate(wsLog.Cells(i, 4).value)
-                End If
-                days = CLng(dTo - dueD)
-                If days <= 0 Then
-                    ageCur = ageCur + bal
-                ElseIf days <= 30 Then
-                    age30 = age30 + bal
-                ElseIf days <= 60 Then
-                    age60 = age60 + bal
-                Else
-                    age90 = age90 + bal
-                End If
-            End If
-        End If
-    Next i
-
-    ' ---- aging: med claims ----
-    If Not wsMC Is Nothing Then
-        For i = 2 To lastMC
-            If NrmID(CStr(wsMC.Cells(i, ML_PATIENT).value)) = NrmID(patientName) Then
-                bal = Num(wsMC.Cells(i, ML_BALANCE).value)
+            invDate = CDate(wsLog.Cells(i, 4).value)
+            If invDate <= dTo Then
+                bal = Num(wsLog.Cells(i, 12).value) - PaymentsAsOf(wsPay, CStr(wsLog.Cells(i, 1).value), dTo)
                 If bal > 0.005 Then
-                    If IsDate(wsMC.Cells(i, ML_DUE).value) Then
-                        dueD = CDate(wsMC.Cells(i, ML_DUE).value)
-                    ElseIf IsDate(wsMC.Cells(i, ML_DATE).value) Then
-                        dueD = CDate(wsMC.Cells(i, ML_DATE).value)
+                    If IsDate(wsLog.Cells(i, 5).value) Then
+                        dueD = CDate(wsLog.Cells(i, 5).value)
                     Else
-                        GoTo NextMCAge
+                        dueD = invDate
                     End If
                     days = CLng(dTo - dueD)
                     If days <= 0 Then
@@ -1018,16 +1111,54 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
                     End If
                 End If
             End If
-NextMCAge:
+        End If
+    Next i
+
+    ' ---- aging: med claims ----
+    If Not wsMC Is Nothing Then
+        For i = 2 To lastMC
+            If NrmID(CStr(wsMC.Cells(i, ML_PATIENT).value)) = NrmID(patientName) Then
+                If IsDate(wsMC.Cells(i, ML_DATE).value) Then
+                    If CDate(wsMC.Cells(i, ML_DATE).value) <= dTo Then
+                        bal = Num(wsMC.Cells(i, ML_TOTAL).value) - PaymentsAsOf(wsPay, CStr(wsMC.Cells(i, ML_NO).value), dTo)
+                        If bal > 0.005 Then
+                            If IsDate(wsMC.Cells(i, ML_DUE).value) Then
+                                dueD = CDate(wsMC.Cells(i, ML_DUE).value)
+                            Else
+                                dueD = CDate(wsMC.Cells(i, ML_DATE).value)
+                            End If
+                            days = CLng(dTo - dueD)
+                            If days <= 0 Then
+                                ageCur = ageCur + bal
+                            ElseIf days <= 30 Then
+                                age30 = age30 + bal
+                            ElseIf days <= 60 Then
+                                age60 = age60 + bal
+                            Else
+                                age90 = age90 + bal
+                            End If
+                        End If
+                    End If
+                End If
+            End If
         Next i
     End If
 
-    ' ---- totals (credit = 0) ----
-    Dim grossOut As Double, balDue As Double, excl As Double, vat As Double
-    Const VATR As Double = 0.15
-    grossOut = running: If grossOut < 0 Then grossOut = 0
-    balDue = Round(grossOut, 2): If balDue < 0 Then balDue = 0
-    excl = Round(balDue / (1 + VATR), 2)
+    ' ---- totals ----
+    ' AUDIT FIX: private patients now have a credit store (PatientCredit /
+    ' AddPatientCredit, modHelpers.bas) so an overpayment or credit-note
+    ' excess is no longer silently lost - it is reflected in the Credit
+    ' footer and subtracted from balDue, at parity with the doctor path.
+    ' balDue/grossOut are no longer floored to zero (see BuildAndRender).
+    Dim grossOut As Double, balDue As Double, excl As Double, vat As Double, credit As Double
+    Dim vatRate As Double
+    vatRate = CurrentVATRate()
+    grossOut = running
+    storedCredit = Round(storedCredit, 2)
+    totalCreditApplied = Round(totalCreditApplied, 2)
+    credit = Round(storedCredit + totalCreditApplied, 2)
+    balDue = Round(grossOut - storedCredit, 2)
+    excl = Round(balDue / (1 + vatRate), 2)
     vat = Round(balDue - excl, 2)
     totalInv = Round(totalInv, 2): totalPaid = Round(totalPaid, 2)
     ageCur = Round(ageCur, 2): age30 = Round(age30, 2)
@@ -1035,7 +1166,7 @@ NextMCAge:
 
     ws.Range("H" & (19 + off)).value = totalInv
     ws.Range("H" & (20 + off)).value = totalPaid
-    ws.Range("H" & (21 + off)).value = 0
+    ws.Range("H" & (21 + off)).value = credit
     ws.Range("H" & (22 + off)).value = excl
     ws.Range("H" & (23 + off)).value = vat
     ws.Range("H" & (24 + off)).value = balDue
