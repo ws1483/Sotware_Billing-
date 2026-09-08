@@ -177,6 +177,128 @@ Public Sub ApplyCreditToInvoice(cnNo As String, srcInv As String, cnTotal As Dou
     End If
 End Sub
 
+' Permanently delete a Credit Note and every entry it created:
+'   - the Payments row(s) it posted against its source invoice (kind
+'     "Credit Note", Ref = cnNo), then recompute that invoice's
+'     Paid/Balance/Status from its remaining Payments rows (ReconcileDoc),
+'   - any excess that spilled over into the doctor/patient credit store
+'     (recomputed the same way ApplyCreditToInvoice split it: excess =
+'     CN total - the amount actually posted as a Payments row),
+'   - its own CreditNoteLines rows and CreditNotes log row.
+' Requires typed confirmation, same pattern as modSearchVoid.VoidDocument.
+Public Function VoidCreditNote(ByVal cnNo As String) As Boolean
+    Dim wsLog As Worksheet, wsLines As Worksheet, wsPay As Worksheet, wsInvLog As Worksheet
+    Dim lr As Long, invLr As Long, i As Long, last As Long
+    Dim srcInv As String, cnTotal As Double, appliedSum As Double, excess As Double
+    Dim recip As String, custID As String, patientName As String, typed As String
+
+    VoidCreditNote = False
+    If Trim(cnNo) = "" Then Exit Function
+
+    Set wsLog = ThisWorkbook.Sheets("CreditNotes")
+    Set wsLines = ThisWorkbook.Sheets("CreditNoteLines")
+    Set wsPay = ThisWorkbook.Sheets("Payments")
+    Set wsInvLog = ThisWorkbook.Sheets("InvoiceLog")
+
+    lr = FindLogRow(wsLog, cnNo)
+    If lr = 0 Then
+        MsgBox cnNo & " was not found in CreditNotes.", vbExclamation
+        Exit Function
+    End If
+
+    srcInv = Trim(CStr(wsLog.Cells(lr, 2).value))
+    cnTotal = Num(wsLog.Cells(lr, 5).value)
+
+    If MsgBox("Permanently DELETE credit note " & cnNo & " and all its associated entries?" & vbCrLf & _
+              "This reverses its effect on source invoice " & srcInv & " (Payments row + balance/status)," & vbCrLf & _
+              "reverses any amount it added to a doctor/patient credit store, and removes it from" & vbCrLf & _
+              "the Credit Notes log and its line items. This cannot be undone.", _
+              vbCritical + vbYesNo, "Confirm Delete Credit Note") = vbNo Then Exit Function
+
+    typed = Trim(InputBox("To confirm, type the credit note number exactly:" & vbCrLf & cnNo, "Confirm Delete"))
+    If typed = "" Then Exit Function
+    If LCase(typed) <> LCase(cnNo) Then
+        MsgBox "Typed value did not match. Delete cancelled.", vbExclamation
+        Exit Function
+    End If
+
+    On Error GoTo Fail
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    ' ---- reverse the Payments row(s) this CN posted against its source invoice ----
+    appliedSum = 0
+    last = wsPay.Cells(wsPay.Rows.Count, "A").End(xlUp).row
+    For i = last To 2 Step -1
+        If NrmID(CStr(wsPay.Cells(i, PY_REF).value)) = NrmID(cnNo) _
+           And LCase$(Trim$(CStr(wsPay.Cells(i, PY_METHOD).value))) = "credit note" Then
+            appliedSum = appliedSum + Num(wsPay.Cells(i, PY_AMT).value)
+            wsPay.Rows(i).Delete
+        End If
+    Next i
+
+    invLr = InvoiceRow(srcInv)
+    If invLr > 0 Then
+        ReconcileDoc "invoice", srcInv          ' recompute Paid/Balance/Status from what's left
+
+        recip = LCase$(Trim$(CStr(wsInvLog.Cells(invLr, 3).value)))
+        custID = CStr(wsInvLog.Cells(invLr, 6).value)
+        patientName = CStr(wsInvLog.Cells(invLr, 7).value)
+
+        ' ---- reverse any excess that spilled into a credit store ----
+        excess = cnTotal - appliedSum
+        If excess > 0.005 Then
+            If recip = "doctor" Then
+                AddDoctorCredit custID, -excess
+                LogAudit "CreditNote", srcInv, "", "Credit -" & Format(excess, "0.00"), _
+                         "CN " & cnNo & " deleted - reversed excess from doctor credit store"
+            Else
+                AddPatientCredit patientName, -excess
+                LogAudit "CreditNote", srcInv, "", "Credit -" & Format(excess, "0.00"), _
+                         "CN " & cnNo & " deleted - reversed excess from patient credit store"
+            End If
+        End If
+    Else
+        ' Source invoice no longer exists (voided separately) - the invoice
+        ' side has nothing left to reverse. Warn if this CN had spilled an
+        ' excess into a credit store, since we cannot tell which store
+        ' (doctor/patient) without the invoice's recipient/name - flag for
+        ' manual review rather than guessing.
+        excess = cnTotal - appliedSum
+        If excess > 0.005 Then
+            LogAudit "CreditNote", cnNo, "", "", _
+                     "Source invoice " & srcInv & " no longer exists; could not auto-reverse " & _
+                     Format(excess, "0.00") & " credit-store amount from CN " & cnNo & " - check manually"
+        End If
+    End If
+
+    LogAudit "Void", cnNo, "Amount " & Format(cnTotal, "0.00"), "DELETED", "Credit note voided (hard delete)"
+
+    ' ---- remove the CN's own line items and log row ----
+    last = wsLines.Cells(wsLines.Rows.Count, "A").End(xlUp).row
+    For i = last To 2 Step -1
+        If NrmID(CStr(wsLines.Cells(i, 1).value)) = NrmID(cnNo) Then wsLines.Rows(i).Delete
+    Next i
+    wsLog.Rows(lr).Delete
+
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+
+    On Error Resume Next
+    RefreshMenuSummary
+    On Error GoTo 0
+
+    MsgBox cnNo & " has been permanently deleted." & vbCrLf & _
+           IIf(invLr > 0, "Invoice " & srcInv & "'s balance/status has been reversed.", _
+               "Source invoice " & srcInv & " no longer exists - nothing to reverse there."), vbInformation
+    VoidCreditNote = True
+    Exit Function
+Fail:
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    MsgBox "VoidCreditNote error: " & Err.Description, vbExclamation
+End Function
+
 Private Function NextPaymentIDp() As String
     Dim wsSet As Worksheet, n As Long
     Set wsSet = ThisWorkbook.Sheets("Settings")

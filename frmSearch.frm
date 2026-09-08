@@ -14,7 +14,7 @@ Attribute VB_Creatable = False
 Attribute VB_PredeclaredId = True
 Attribute VB_Exposed = False
 Option Explicit
-' frmSearch — search across Invoices + Quotes + Credit Notes + Med Claims + Statements.
+' frmSearch ï¿½ search across Invoices + Quotes + Credit Notes + Med Claims + Statements.
 ' ListBox columns: DocNo | Type | Doctor | Patient | Date | Total | Status
 '
 ' TWO MODES:
@@ -275,8 +275,7 @@ Private Sub btnVoid_Click()
         Exit Sub
     End If
     If docType = "credit note" Then
-        MsgBox "Credit Notes cannot be voided here (they have already reduced an invoice balance)." & vbCrLf & _
-               "Reverse manually if required.", vbExclamation
+        If VoidCreditNote(docNo) Then RunSearch
         Exit Sub
     End If
     If docType = "med claim" Then
