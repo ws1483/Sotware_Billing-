@@ -740,7 +740,8 @@ Private Function PatientCredit(patientName As String) As Double
 
     last = wsP.Cells(wsP.Rows.Count, "A").End(xlUp).row
     For i = 2 To last
-        If NrmID(CStr(wsP.Cells(i, "A").Value)) = NrmID(patientName) Then
+        If NrmID(CStr(wsP.Cells(i, "A").Value)) = NrmID(patientName) _
+           Or NrmID(CStr(wsP.Cells(i, "B").Value)) = NrmID(patientName) Then
             PatientCredit = Num(wsP.Cells(i, creditCol).Value)
             Exit Function
         End If
@@ -966,7 +967,8 @@ Private Sub RenderPatientHeader(ws As Worksheet, patientName As String, _
     If Not wsP Is Nothing Then
         last = wsP.Cells(wsP.Rows.Count, "A").End(xlUp).row
         For i = 2 To last
-            If NrmID(CStr(wsP.Cells(i, "A").Value)) = NrmID(patientName) Then
+            If NrmID(CStr(wsP.Cells(i, "A").Value)) = NrmID(patientName) _
+               Or NrmID(CStr(wsP.Cells(i, "B").Value)) = NrmID(patientName) Then
                 ws.Range("B6").Value = wsP.Cells(i, "B").Value
                 ws.Range("B8").Value = wsP.Cells(i, "C").Value
                 ws.Range("B9").Value = wsP.Cells(i, "D").Value
@@ -1174,7 +1176,11 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
                 ws.Cells(r, 1).Value = Format(CDate(wsMC.Cells(rowsArr(i), ML_DATE).Value), "dd/mm/yyyy")
                 ws.Cells(r, 2).Value = wsMC.Cells(rowsArr(i), ML_NO).Value
                 ws.Cells(r, 3).Value = wsMC.Cells(rowsArr(i), ML_PATIENT).Value
-                ws.Cells(r, 4).Value = "Med Claim"
+                If Trim(CStr(wsMC.Cells(rowsArr(i), ML_APPLIANCE).Value)) <> "" Then
+                    ws.Cells(r, 4).Value = "Med Claim - " & wsMC.Cells(rowsArr(i), ML_APPLIANCE).Value
+                Else
+                    ws.Cells(r, 4).Value = "Med Claim"
+                End If
                 ws.Cells(r, 5).Value = invTotal
                 ws.Cells(r, 8).Value = running
             Case Else
