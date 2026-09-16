@@ -387,7 +387,7 @@ Private Function BuildAndRender(drName As String, dFrom As Date, dTo As Date, _
     Dim invDate As Date, invTotal As Double
     Dim lastP As Long, pInv As String, pAmt As Double, logRow As Long
     Dim totalLines As Long, availRows As Long, needRows As Long, off As Long
-    Dim grossOut As Double, balDue As Double, excl As Double, vat As Double
+    Dim grossOut As Double, grossCheck As Double, balDue As Double, excl As Double, vat As Double
 
     Set ws = ResetStatementSheet()
     Set wsLog = ThisWorkbook.Sheets("InvoiceLog")
@@ -531,9 +531,10 @@ Private Function BuildAndRender(drName As String, dFrom As Date, dTo As Date, _
     ageCur = Round(ageCur, 2): age30 = Round(age30, 2)
     age60 = Round(age60, 2): age90 = Round(age90, 2)
     storedCredit = Round(storedCredit, 2)
+    grossCheck = Round(running, 2)
     grossOut = Round(ageCur + age30 + age60 + age90, 2)
     balDue = Round(grossOut - storedCredit, 2)
-    CheckAgingReconciliation drName, dFrom, dTo, ageCur, age30, age60, age90, grossOut
+    CheckAgingReconciliation drName, dFrom, dTo, ageCur, age30, age60, age90, grossCheck
     If balDue >= 0 Then
         excl = Round(balDue / (1 + VAT_RATE), 2)
         vat = Round(balDue - excl, 2)
@@ -738,7 +739,9 @@ Private Function DoctorCreditp(custID As String) As Double
 End Function
 
 Private Function PatientCredit(patientName As String) As Double
-    Dim wsP As Worksheet, last As Long, lastCol As Long, i As Long, creditCol As Long
+    Dim wsP As Worksheet, last As Long, lastCol As Long, i As Long
+    Dim creditCol As Long, keyCol As Long, nameCol As Long
+    Dim hdr As String
 
     On Error Resume Next
     Set wsP = ThisWorkbook.Sheets("Patients")
@@ -747,18 +750,25 @@ Private Function PatientCredit(patientName As String) As Double
 
     lastCol = wsP.Cells(1, wsP.Columns.Count).End(xlToLeft).Column
     For i = 1 To lastCol
-        Select Case UCase(Trim(CStr(wsP.Cells(1, i).Value)))
+        hdr = UCase(Trim(CStr(wsP.Cells(1, i).Value)))
+        Select Case hdr
             Case "CREDIT", "PATIENT CREDIT"
                 creditCol = i
                 Exit For
+            Case "PATIENT ID", "ID"
+                If keyCol = 0 Then keyCol = i
+            Case "PATIENT", "PATIENT NAME", "NAME"
+                If nameCol = 0 Then nameCol = i
         End Select
     Next i
     If creditCol = 0 Then Exit Function
+    If keyCol = 0 Then keyCol = 1
+    If nameCol = 0 Then nameCol = 2
 
     last = wsP.Cells(wsP.Rows.Count, "A").End(xlUp).row
     For i = 2 To last
-        If NrmID(CStr(wsP.Cells(i, "A").Value)) = NrmID(patientName) _
-           Or NrmID(CStr(wsP.Cells(i, "B").Value)) = NrmID(patientName) Then
+        If NrmID(CStr(wsP.Cells(i, keyCol).Value)) = NrmID(patientName) _
+           Or NrmID(CStr(wsP.Cells(i, nameCol).Value)) = NrmID(patientName) Then
             PatientCredit = Num(wsP.Cells(i, creditCol).Value)
             Exit Function
         End If
@@ -1050,7 +1060,7 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
     Dim invDate As Date, invTotal As Double
     Dim pInv As String, pAmt As Double, logRow As Long, mcRow As Long
     Dim totalLines As Long, availRows As Long, needRows As Long, off As Long
-    Dim grossOut As Double, balDue As Double, excl As Double, vat As Double
+    Dim grossOut As Double, grossCheck As Double, balDue As Double, excl As Double, vat As Double
 
     Set ws = ResetStatementSheet()
     Set wsLog = ThisWorkbook.Sheets("InvoiceLog")
@@ -1263,9 +1273,10 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
     ageCur = Round(ageCur, 2): age30 = Round(age30, 2)
     age60 = Round(age60, 2): age90 = Round(age90, 2)
     storedCredit = Round(storedCredit, 2)
+    grossCheck = Round(running, 2)
     grossOut = Round(ageCur + age30 + age60 + age90, 2)
     balDue = Round(grossOut - storedCredit, 2)
-    CheckAgingReconciliation patientName, dFrom, dTo, ageCur, age30, age60, age90, grossOut
+    CheckAgingReconciliation patientName, dFrom, dTo, ageCur, age30, age60, age90, grossCheck
     If balDue >= 0 Then
         excl = Round(balDue / (1 + VAT_RATE), 2)
         vat = Round(balDue - excl, 2)
