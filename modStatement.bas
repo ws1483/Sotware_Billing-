@@ -662,6 +662,7 @@ Private Function StmtDoctorsWithBalance(dept As String) As Collection
     Set totals = CreateObject("Scripting.Dictionary")
     Set ws = ThisWorkbook.Sheets("InvoiceLog")
     Set wsPay = ThisWorkbook.Sheets("Payments")
+    ' Build the batch list from today's live owing, not a statement-period cutoff.
     Set payIdx = BuildPaymentsIndex(wsPay, Date)
 
     last = ws.Cells(ws.Rows.Count, "A").End(xlUp).row
@@ -793,6 +794,7 @@ Private Function PatientsWithBalance(dept As String) As Collection
     Set totals = CreateObject("Scripting.Dictionary")
     Set ws = ThisWorkbook.Sheets("InvoiceLog")
     Set wsPay = ThisWorkbook.Sheets("Payments")
+    ' Build the batch list from today's live owing, not a statement-period cutoff.
     Set payIdx = BuildPaymentsIndex(wsPay, Date)
     On Error Resume Next
     Set wsMC = ThisWorkbook.Sheets("MedAidLog")
