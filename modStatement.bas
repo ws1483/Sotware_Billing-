@@ -115,13 +115,29 @@ Private Function PaymentLineLabel(wsPay As Worksheet, payRow As Long, wasUndated
     PaymentLineLabel = labelText
 End Function
 
+Private Sub QueuePaymentEntry(wsPay As Worksheet, payRow As Long, dFrom As Date, dTo As Date, _
+                              ByRef cnt As Long, ByRef rowsArr() As Long, ByRef dts() As Double, _
+                              ByRef kinds() As String, ByRef undateds() As Boolean)
+    Dim pDate As Date, wasUndated As Boolean
+
+    wasUndated = False
+    pDate = PaymentEffectiveDate(wsPay.Cells(payRow, 3).Value, dTo, wasUndated)
+    If pDate >= dFrom And pDate <= dTo Then
+        cnt = cnt + 1
+        rowsArr(cnt) = payRow
+        dts(cnt) = CDbl(pDate)
+        kinds(cnt) = "PAY"
+        undateds(cnt) = wasUndated
+    End If
+End Sub
+
 Private Sub CheckAgingReconciliation(entityName As String, dFrom As Date, dTo As Date, _
                                      ageCur As Double, age30 As Double, age60 As Double, age90 As Double, _
-                                     balDue As Double, storedCredit As Double)
+                                     grossOutstanding As Double)
     Dim agingSum As Double, expectedGross As Double, msg As String
 
     agingSum = Round(ageCur + age30 + age60 + age90, 2)
-    expectedGross = Round(balDue + storedCredit, 2)
+    expectedGross = Round(grossOutstanding, 2)
     If Abs(agingSum - expectedGross) > 0.01 Then
         msg = "Statement aging mismatch for " & entityName & _
               " (" & Format(dFrom, "yyyy-mm-dd") & " to " & Format(dTo, "yyyy-mm-dd") & _
@@ -369,8 +385,7 @@ Private Function BuildAndRender(drName As String, dFrom As Date, dTo As Date, _
     Dim ageCur As Double, age30 As Double, age60 As Double, age90 As Double
     Dim bal As Double, dueD As Date, days As Long
     Dim invDate As Date, invTotal As Double
-    Dim lastP As Long, pInv As String, pDate As Date, pAmt As Double, logRow As Long
-    Dim wasUndated As Boolean
+    Dim lastP As Long, pInv As String, pAmt As Double, logRow As Long
     Dim totalLines As Long, availRows As Long, needRows As Long, off As Long
     Dim grossOut As Double, balDue As Double, excl As Double, vat As Double
 
@@ -414,15 +429,7 @@ Private Function BuildAndRender(drName As String, dFrom As Date, dTo As Date, _
             If NrmID(CStr(wsLog.Cells(logRow, 6).Value)) = NrmID(custID) _
                And LCase(Trim(CStr(wsLog.Cells(logRow, 3).Value))) = "doctor" _
                And DeptMatch(pInv, dept) Then
-                wasUndated = False
-                pDate = PaymentEffectiveDate(wsPay.Cells(i, 3).Value, dTo, wasUndated)
-                If pDate >= dFrom And pDate <= dTo Then
-                    cnt = cnt + 1
-                    rowsArr(cnt) = i
-                    dts(cnt) = CDbl(pDate)
-                    kinds(cnt) = "PAY"
-                    undateds(cnt) = wasUndated
-                End If
+                QueuePaymentEntry wsPay, i, dFrom, dTo, cnt, rowsArr, dts, kinds, undateds
             End If
         End If
     Next i
@@ -526,7 +533,7 @@ Private Function BuildAndRender(drName As String, dFrom As Date, dTo As Date, _
     storedCredit = Round(storedCredit, 2)
     grossOut = Round(ageCur + age30 + age60 + age90, 2)
     balDue = Round(grossOut - storedCredit, 2)
-    CheckAgingReconciliation drName, dFrom, dTo, ageCur, age30, age60, age90, balDue, storedCredit
+    CheckAgingReconciliation drName, dFrom, dTo, ageCur, age30, age60, age90, grossOut
     If balDue >= 0 Then
         excl = Round(balDue / (1 + VAT_RATE), 2)
         vat = Round(balDue - excl, 2)
@@ -1041,8 +1048,7 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
     Dim ageCur As Double, age30 As Double, age60 As Double, age90 As Double
     Dim bal As Double, dueD As Date, days As Long
     Dim invDate As Date, invTotal As Double
-    Dim pInv As String, pDate As Date, pAmt As Double, logRow As Long, mcRow As Long
-    Dim wasUndated As Boolean
+    Dim pInv As String, pAmt As Double, logRow As Long, mcRow As Long
     Dim totalLines As Long, availRows As Long, needRows As Long, off As Long
     Dim grossOut As Double, balDue As Double, excl As Double, vat As Double
 
@@ -1108,28 +1114,12 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
             If LCase(Trim(CStr(wsLog.Cells(logRow, 3).Value))) = "patient" _
                And NrmID(CStr(wsLog.Cells(logRow, 7).Value)) = NrmID(patientName) _
                And DeptMatch(pInv, dept) Then
-                wasUndated = False
-                pDate = PaymentEffectiveDate(wsPay.Cells(i, 3).Value, dTo, wasUndated)
-                If pDate >= dFrom And pDate <= dTo Then
-                    cnt = cnt + 1
-                    rowsArr(cnt) = i
-                    dts(cnt) = CDbl(pDate)
-                    kinds(cnt) = "PAY"
-                    undateds(cnt) = wasUndated
-                End If
+                QueuePaymentEntry wsPay, i, dFrom, dTo, cnt, rowsArr, dts, kinds, undateds
             End If
         ElseIf mcRow > 0 Then
             If NrmID(CStr(wsMC.Cells(mcRow, ML_PATIENT).Value)) = NrmID(patientName) _
                And DeptMatch(pInv, dept) Then
-                wasUndated = False
-                pDate = PaymentEffectiveDate(wsPay.Cells(i, 3).Value, dTo, wasUndated)
-                If pDate >= dFrom And pDate <= dTo Then
-                    cnt = cnt + 1
-                    rowsArr(cnt) = i
-                    dts(cnt) = CDbl(pDate)
-                    kinds(cnt) = "PAY"
-                    undateds(cnt) = wasUndated
-                End If
+                QueuePaymentEntry wsPay, i, dFrom, dTo, cnt, rowsArr, dts, kinds, undateds
             End If
         End If
     Next i
@@ -1272,7 +1262,7 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
     storedCredit = Round(storedCredit, 2)
     grossOut = Round(ageCur + age30 + age60 + age90, 2)
     balDue = Round(grossOut - storedCredit, 2)
-    CheckAgingReconciliation patientName, dFrom, dTo, ageCur, age30, age60, age90, balDue, storedCredit
+    CheckAgingReconciliation patientName, dFrom, dTo, ageCur, age30, age60, age90, grossOut
     If balDue >= 0 Then
         excl = Round(balDue / (1 + VAT_RATE), 2)
         vat = Round(balDue - excl, 2)
