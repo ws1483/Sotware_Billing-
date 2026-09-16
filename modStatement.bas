@@ -721,7 +721,29 @@ Private Function DoctorCreditp(custID As String) As Double
 End Function
 
 Private Function PatientCredit(patientName As String) As Double
-    PatientCredit = 0
+    Dim wsP As Worksheet, last As Long, lastCol As Long, i As Long, creditCol As Long
+
+    On Error Resume Next
+    Set wsP = ThisWorkbook.Sheets("Patients")
+    On Error GoTo 0
+    If wsP Is Nothing Then Exit Function
+
+    lastCol = wsP.Cells(1, wsP.Columns.Count).End(xlToLeft).Column
+    For i = 1 To lastCol
+        If InStr(1, LCase(Trim(CStr(wsP.Cells(1, i).Value))), "credit", vbTextCompare) > 0 Then
+            creditCol = i
+            Exit For
+        End If
+    Next i
+    If creditCol = 0 Then Exit Function
+
+    last = wsP.Cells(wsP.Rows.Count, "A").End(xlUp).row
+    For i = 2 To last
+        If NrmID(CStr(wsP.Cells(i, "A").Value)) = NrmID(patientName) Then
+            PatientCredit = Num(wsP.Cells(i, creditCol).Value)
+            Exit Function
+        End If
+    Next i
 End Function
 
 ' ============================================================================
