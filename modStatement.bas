@@ -21,7 +21,6 @@ Private mStmtInteractive As Boolean
 Private mPaymentsIdx As Object
 Private mPaymentsIdxSheet As String
 Private mPaymentsIdxCutoff As Double
-Private mPatientCreditIdx As Object
 
 Private Function NrmID(s As String) As String
     NrmID = UCase(Replace(Trim(s), " ", ""))
@@ -814,11 +813,6 @@ Private Function PatientCreditFromIdx(idx As Object, patientName As String) As D
     If key <> "" Then
         If idx.Exists(key) Then PatientCreditFromIdx = Num(idx(key))
     End If
-End Function
-
-Private Function PatientCredit(patientName As String) As Double
-    If mPatientCreditIdx Is Nothing Then Set mPatientCreditIdx = BuildPatientCreditIndex()
-    PatientCredit = PatientCreditFromIdx(mPatientCreditIdx, patientName)
 End Function
 
 ' ============================================================================
