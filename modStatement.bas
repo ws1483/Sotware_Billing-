@@ -303,11 +303,12 @@ Private Function BuildAndRender(drName As String, dFrom As Date, dTo As Date, _
             If NrmID(CStr(wsLog.Cells(logRow, 6).Value)) = NrmID(custID) _
                And UCase(CStr(wsLog.Cells(logRow, 3).Value)) = "DOCTOR" _
                And DeptMatch(pInv, dept) Then
+                invDate = CDate(wsLog.Cells(logRow, 4).Value)
                 pDate = CDate(wsPay.Cells(i, 3).Value)
                 pAmt = Num(wsPay.Cells(i, 4).Value)
-                ' opening already reflects balances net of ALL payments to date,
-                ' so only show IN-RANGE payments as lines
-                If pDate >= dFrom And pDate <= dTo Then
+                ' opening already reflects balances net of ALL payments to date;
+                ' only show in-range payment lines for invoices dated in-range
+                If invDate >= dFrom And pDate >= dFrom And pDate <= dTo Then
                     cnt = cnt + 1: rowsArr(cnt) = i: dts(cnt) = CDbl(pDate): kinds(cnt) = "PAY"
                 End If
             End If
@@ -403,7 +404,7 @@ Private Function BuildAndRender(drName As String, dFrom As Date, dTo As Date, _
 
     ' ---- totals ----
     Dim grossOut As Double, balDue As Double, excl As Double, vat As Double
-    grossOut = running: If grossOut < 0 Then grossOut = 0
+    grossOut = ageCur + age30 + age60 + age90: If grossOut < 0 Then grossOut = 0
     credit = Round(credit, 2)
     balDue = Round(grossOut - credit, 2): If balDue < 0 Then balDue = 0
     excl = Round(balDue / (1 + VAT_RATE), 2)
@@ -818,10 +819,12 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
             If LCase(Trim(CStr(wsLog.Cells(logRow, 3).Value))) = "patient" _
                And NrmID(CStr(wsLog.Cells(logRow, 7).Value)) = NrmID(patientName) _
                And DeptMatch(pInv, dept) Then
+                invDate = CDate(wsLog.Cells(logRow, 4).Value)
                 pDate = CDate(wsPay.Cells(i, 3).Value)
                 pAmt = Num(wsPay.Cells(i, 4).Value)
-                ' opening already net of ALL payments; show only IN-RANGE payments as lines
-                If pDate >= dFrom And pDate <= dTo Then
+                ' opening already reflects balances net of ALL payments to date;
+                ' only show in-range payment lines for invoices dated in-range
+                If invDate >= dFrom And pDate >= dFrom And pDate <= dTo Then
                     cnt = cnt + 1: rowsArr(cnt) = i: dts(cnt) = CDbl(pDate): kinds(cnt) = "PAY"
                 End If
             End If
@@ -918,7 +921,7 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
     ' ---- totals (credit = 0) ----
     Dim grossOut As Double, balDue As Double, excl As Double, vat As Double
     Const VATR As Double = 0.15
-    grossOut = running: If grossOut < 0 Then grossOut = 0
+    grossOut = ageCur + age30 + age60 + age90: If grossOut < 0 Then grossOut = 0
     balDue = Round(grossOut, 2): If balDue < 0 Then balDue = 0
     excl = Round(balDue / (1 + VATR), 2)
     vat = Round(balDue - excl, 2)
@@ -979,4 +982,3 @@ Private Function DeptStmtTitle(dept As String) As String
         Case Else: DeptStmtTitle = tWA & " / " & tWD & " Statement"
     End Select
 End Function
-
