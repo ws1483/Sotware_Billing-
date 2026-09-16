@@ -492,7 +492,7 @@ Private Function BuildAndRender(drName As String, dFrom As Date, dTo As Date, _
            And LCase(Trim(CStr(wsLog.Cells(i, 3).Value))) = "doctor" _
            And DeptMatch(CStr(wsLog.Cells(i, 1).Value), dept) Then
             bal = Num(wsLog.Cells(i, 12).Value) - PaymentsAsOfIdx(payIdx, CStr(wsLog.Cells(i, 1).Value), dTo)
-            If Abs(bal) > 0.005 Then
+            If bal > 0.005 Then
                 If IsDate(wsLog.Cells(i, 5).Value) Then
                     dueD = CDate(wsLog.Cells(i, 5).Value)
                 Else
@@ -1199,7 +1199,7 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
            And NrmID(CStr(wsLog.Cells(i, 7).Value)) = NrmID(patientName) _
            And DeptMatch(CStr(wsLog.Cells(i, 1).Value), dept) Then
             bal = Num(wsLog.Cells(i, 12).Value) - PaymentsAsOfIdx(payIdx, CStr(wsLog.Cells(i, 1).Value), dTo)
-            If Abs(bal) > 0.005 Then
+            If bal > 0.005 Then
                 If IsDate(wsLog.Cells(i, 5).Value) Then
                     dueD = CDate(wsLog.Cells(i, 5).Value)
                 Else
@@ -1223,7 +1223,7 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
             If NrmID(CStr(wsMC.Cells(i, ML_PATIENT).Value)) = NrmID(patientName) _
                And DeptMatch(CStr(wsMC.Cells(i, ML_NO).Value), dept) Then
                 bal = Num(wsMC.Cells(i, ML_TOTAL).Value) - PaymentsAsOfIdx(payIdx, CStr(wsMC.Cells(i, ML_NO).Value), dTo)
-                If Abs(bal) > 0.005 Then
+                If bal > 0.005 Then
                     If IsDate(wsMC.Cells(i, ML_DUE).Value) Then
                         dueD = CDate(wsMC.Cells(i, ML_DUE).Value)
                     Else
