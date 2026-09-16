@@ -919,11 +919,11 @@ End Function
 
 Public Sub RunSinglePatientStatement(patientName As String, dFrom As Date, dTo As Date, dept As String)
     Dim ws As Worksheet, lastRow As Long, ans As VbMsgBoxResult, folder As String
-    Dim tInv As Double, tPaid As Double, bDue As Double
+    Dim tInv As Double, tPaid As Double, cr As Double, bDue As Double
     On Error GoTo Fail
     mStmtInteractive = True
     Application.ScreenUpdating = False
-    Set ws = BuildAndRenderPatient(patientName, dFrom, dTo, dept, lastRow, tInv, tPaid, bDue)
+    Set ws = BuildAndRenderPatient(patientName, dFrom, dTo, dept, lastRow, tInv, tPaid, cr, bDue)
     Application.ScreenUpdating = True
     mStmtInteractive = False
     If lastRow = 0 Then
@@ -938,7 +938,7 @@ Public Sub RunSinglePatientStatement(patientName As String, dFrom As Date, dTo A
         If folder <> "" Then
             Dim fpath As String
             fpath = ExportStatementPDFp(ws, patientName, dFrom, dTo, folder)
-            LogStatementPatient patientName, dept, dFrom, dTo, tInv, tPaid, bDue, fpath
+            LogStatementPatient patientName, dept, dFrom, dTo, tInv, tPaid, cr, bDue, fpath
             MsgBox "Statement PDF saved and logged.", vbInformation
         End If
     End If
@@ -952,7 +952,7 @@ End Sub
 Public Sub RunBatchPatientStatements(dFrom As Date, dTo As Date, dept As String)
     Dim pats As Collection, i As Long, ws As Worksheet, lastRow As Long
     Dim patientName As String, made As Long, folder As String
-    Dim tInv As Double, tPaid As Double, bDue As Double, fpath As String
+    Dim tInv As Double, tPaid As Double, cr As Double, bDue As Double, fpath As String
     On Error GoTo Fail
     mStmtInteractive = False
     Set pats = PatientsWithBalance(dept, Date)
@@ -965,10 +965,10 @@ Public Sub RunBatchPatientStatements(dFrom As Date, dTo As Date, dept As String)
     made = 0
     For i = 1 To pats.Count
         patientName = pats(i)
-        Set ws = BuildAndRenderPatient(patientName, dFrom, dTo, dept, lastRow, tInv, tPaid, bDue)
+        Set ws = BuildAndRenderPatient(patientName, dFrom, dTo, dept, lastRow, tInv, tPaid, cr, bDue)
         If lastRow > 0 Then
             fpath = ExportStatementPDFp(ws, patientName, dFrom, dTo, folder)
-            LogStatementPatient patientName, dept, dFrom, dTo, tInv, tPaid, bDue, fpath
+            LogStatementPatient patientName, dept, dFrom, dTo, tInv, tPaid, cr, bDue, fpath
             made = made + 1
         End If
     Next i
@@ -983,7 +983,7 @@ End Sub
 
 Private Sub LogStatementPatient(patientName As String, dept As String, _
                                 dFrom As Date, dTo As Date, tInv As Double, _
-                                tPaid As Double, bDue As Double, pdfPath As String)
+                                tPaid As Double, cr As Double, bDue As Double, pdfPath As String)
     Dim wsL As Worksheet, r As Long, nextNo As Long, lastNo As String
     Set wsL = ThisWorkbook.Sheets("StatementLog")
     r = wsL.Cells(wsL.Rows.Count, "A").End(xlUp).row
@@ -1004,7 +1004,7 @@ Private Sub LogStatementPatient(patientName As String, dept As String, _
     wsL.Cells(r, "G").Value = dTo:   wsL.Cells(r, "G").NumberFormat = "yyyy/mm/dd"
     wsL.Cells(r, "H").Value = tInv
     wsL.Cells(r, "I").Value = tPaid
-    wsL.Cells(r, "J").Value = 0
+    wsL.Cells(r, "J").Value = cr
     wsL.Cells(r, "K").Value = bDue
     wsL.Cells(r, "L").Value = pdfPath
 End Sub
@@ -1086,6 +1086,7 @@ End Sub
 Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo As Date, _
                                        dept As String, ByRef lastContentRow As Long, _
                                        ByRef outTotInv As Double, ByRef outTotPaid As Double, _
+                                       ByRef outCredit As Double, _
                                        ByRef outBalDue As Double) As Worksheet
     Dim ws As Worksheet, wsLog As Worksheet, wsPay As Worksheet, wsMC As Worksheet
     Dim payIdx As Object, patientCreditIdx As Object
@@ -1338,7 +1339,7 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
 
     FormatStatementP ws, r - 1
 
-    outTotInv = totalInv: outTotPaid = totalPaid: outBalDue = balDue
+    outTotInv = totalInv: outTotPaid = totalPaid: outCredit = storedCredit: outBalDue = balDue
     lastContentRow = FOOTER_LAST_ROW + off
     PaginateStatementP ws, lastContentRow
     Set BuildAndRenderPatient = ws
