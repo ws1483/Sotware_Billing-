@@ -18,6 +18,10 @@ Private Const TPL_SHEET As String = "StatementTpl"
 Private Const OUT_SHEET As String = "Statement"
 Private Const LOG_SHEET As String = "StatementLog"
 Private mStmtInteractive As Boolean
+Private mPaymentsIdx As Object
+Private mPaymentsIdxSheet As String
+Private mPaymentsIdxCutoff As Double
+Private mPatientCreditIdx As Object
 
 Private Function NrmID(s As String) As String
     NrmID = UCase(Replace(Trim(s), " ", ""))
@@ -72,6 +76,17 @@ Private Function BuildPaymentsIndex(wsPay As Worksheet, undatedAsOf As Date) As 
     Set BuildPaymentsIndex = idx
 End Function
 
+Private Function CachedPaymentsIndex(wsPay As Worksheet, undatedAsOf As Date) As Object
+    If mPaymentsIdx Is Nothing _
+       Or mPaymentsIdxSheet <> wsPay.Name _
+       Or mPaymentsIdxCutoff <> CDbl(undatedAsOf) Then
+        Set mPaymentsIdx = BuildPaymentsIndex(wsPay, undatedAsOf)
+        mPaymentsIdxSheet = wsPay.Name
+        mPaymentsIdxCutoff = CDbl(undatedAsOf)
+    End If
+    Set CachedPaymentsIndex = mPaymentsIdx
+End Function
+
 Private Function PaymentsAsOfIdx(idx As Object, docNo As String, cutoff As Date) As Double
     Dim entries As Collection, entry As Variant
     Dim docKey As String
@@ -91,7 +106,7 @@ End Function
 
 Private Function PaymentsAsOf(wsPay As Worksheet, docNo As String, cutoff As Date) As Double
     Dim idx As Object
-    Set idx = BuildPaymentsIndex(wsPay, cutoff)
+    Set idx = CachedPaymentsIndex(wsPay, cutoff)
     PaymentsAsOf = PaymentsAsOfIdx(idx, docNo, cutoff)
 End Function
 
@@ -738,15 +753,20 @@ Private Function DoctorCreditp(custID As String) As Double
     Next i
 End Function
 
-Private Function PatientCredit(patientName As String) As Double
+Private Function BuildPatientCreditIndex() As Object
     Dim wsP As Worksheet, last As Long, lastCol As Long, i As Long
     Dim creditCol As Long, keyCol As Long, nameCol As Long
-    Dim hdr As String
+    Dim hdr As String, keyVal As String, nameVal As String
+    Dim idx As Object
 
+    Set idx = CreateObject("Scripting.Dictionary")
     On Error Resume Next
     Set wsP = ThisWorkbook.Sheets("Patients")
     On Error GoTo 0
-    If wsP Is Nothing Then Exit Function
+    If wsP Is Nothing Then
+        Set BuildPatientCreditIndex = idx
+        Exit Function
+    End If
 
     lastCol = wsP.Cells(1, wsP.Columns.Count).End(xlToLeft).Column
     For i = 1 To lastCol
@@ -761,18 +781,36 @@ Private Function PatientCredit(patientName As String) As Double
                 If nameCol = 0 Then nameCol = i
         End Select
     Next i
-    If creditCol = 0 Then Exit Function
+    If creditCol = 0 Then
+        Set BuildPatientCreditIndex = idx
+        Exit Function
+    End If
     If keyCol = 0 Then keyCol = 1
     If nameCol = 0 Then nameCol = 2
 
     last = wsP.Cells(wsP.Rows.Count, "A").End(xlUp).row
     For i = 2 To last
-        If NrmID(CStr(wsP.Cells(i, keyCol).Value)) = NrmID(patientName) _
-           Or NrmID(CStr(wsP.Cells(i, nameCol).Value)) = NrmID(patientName) Then
-            PatientCredit = Num(wsP.Cells(i, creditCol).Value)
-            Exit Function
-        End If
+        keyVal = NrmID(CStr(wsP.Cells(i, keyCol).Value))
+        nameVal = NrmID(CStr(wsP.Cells(i, nameCol).Value))
+        If keyVal <> "" Then idx(keyVal) = Num(wsP.Cells(i, creditCol).Value)
+        If nameVal <> "" Then idx(nameVal) = Num(wsP.Cells(i, creditCol).Value)
     Next i
+    Set BuildPatientCreditIndex = idx
+End Function
+
+Private Function PatientCreditFromIdx(idx As Object, patientName As String) As Double
+    Dim key As String
+
+    If idx Is Nothing Then Exit Function
+    key = NrmID(patientName)
+    If key <> "" Then
+        If idx.Exists(key) Then PatientCreditFromIdx = Num(idx(key))
+    End If
+End Function
+
+Private Function PatientCredit(patientName As String) As Double
+    If mPatientCreditIdx Is Nothing Then Set mPatientCreditIdx = BuildPatientCreditIndex()
+    PatientCredit = PatientCreditFromIdx(mPatientCreditIdx, patientName)
 End Function
 
 ' ============================================================================
@@ -817,6 +855,7 @@ Private Function PatientsWithBalance(dept As String, cutoffDate As Date) As Coll
     Dim ws As Worksheet, wsMC As Worksheet, wsPay As Worksheet, payIdx As Object
     Dim last As Long, lastMC As Long, i As Long, nm As String, key As String, docNo As String
     Dim seen As Object, totals As Object, col As New Collection, order As New Collection
+    Dim patientCreditIdx As Object
     Dim cutoff As Date
 
     cutoff = cutoffDate
@@ -827,6 +866,7 @@ Private Function PatientsWithBalance(dept As String, cutoffDate As Date) As Coll
     Set wsPay = ThisWorkbook.Sheets("Payments")
     ' Batch selection uses an explicit live cutoff supplied by the caller.
     Set payIdx = BuildPaymentsIndex(wsPay, cutoff)
+    Set patientCreditIdx = BuildPatientCreditIndex()
     On Error Resume Next
     Set wsMC = ThisWorkbook.Sheets("MedAidLog")
     On Error GoTo 0
@@ -871,7 +911,7 @@ Private Function PatientsWithBalance(dept As String, cutoffDate As Date) As Coll
     For i = 1 To order.Count
         nm = CStr(order(i))
         key = NrmID(nm)
-        If CDbl(totals(key)) - PatientCredit(nm) > 0.005 Then col.Add nm
+        If CDbl(totals(key)) - PatientCreditFromIdx(patientCreditIdx, nm) > 0.005 Then col.Add nm
     Next i
 
     Set PatientsWithBalance = col
@@ -1048,7 +1088,7 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
                                        ByRef outTotInv As Double, ByRef outTotPaid As Double, _
                                        ByRef outBalDue As Double) As Worksheet
     Dim ws As Worksheet, wsLog As Worksheet, wsPay As Worksheet, wsMC As Worksheet
-    Dim payIdx As Object
+    Dim payIdx As Object, patientCreditIdx As Object
     Dim last As Long, lastMC As Long, lastP As Long, i As Long, j As Long
     Dim opening As Double, storedCredit As Double
     Dim rowsArr() As Long, dts() As Double, kinds() As String, undateds() As Boolean, cnt As Long
@@ -1069,7 +1109,8 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
     Set wsMC = ThisWorkbook.Sheets("MedAidLog")
     On Error GoTo 0
     Set payIdx = BuildPaymentsIndex(wsPay, dTo)
-    storedCredit = PatientCredit(patientName)
+    Set patientCreditIdx = BuildPatientCreditIndex()
+    storedCredit = PatientCreditFromIdx(patientCreditIdx, patientName)
 
     RenderPatientHeader ws, patientName, dFrom, dTo, dept
 
