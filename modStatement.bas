@@ -5,7 +5,7 @@ Option Explicit
 '  - locale-safe numeric reads via Num() (comma decimals -> full cents)
 '  - hardened ResetStatementSheet (never destroys data/log sheets)
 '  - opening/aging/list balances are derived live from doc totals minus indexed payments
-'  - undated payments are treated as statement-date exceptions and traced via Debug.Print
+'  - undated payments are counted at the statement cutoff, logged to Debug.Print, and shown as blank-date '(undated)' ledger lines
 '  - patient statements also fold MedAidLog claims into opening, ledger, aging, and balance lists
 '  - unambiguous header dates (yyyy-mm-dd)
 Private Const VAT_RATE As Double = 0.15
@@ -653,17 +653,20 @@ Private Function FindMCRow(wsMC As Worksheet, docNo As String) As Long
     Next i
 End Function
 
-Private Function StmtDoctorsWithBalance(dept As String) As Collection
+Private Function StmtDoctorsWithBalance(dept As String, Optional cutoffDate As Variant) As Collection
     Dim ws As Worksheet, wsPay As Worksheet, payIdx As Object
     Dim last As Long, i As Long, custID As String, docNo As String, key As String
     Dim seen As Object, totals As Object, order As New Collection, col As New Collection, drName As String
+    Dim cutoff As Date
+
+    If IsDate(cutoffDate) Then cutoff = CDate(cutoffDate) Else cutoff = Date
 
     Set seen = CreateObject("Scripting.Dictionary")
     Set totals = CreateObject("Scripting.Dictionary")
     Set ws = ThisWorkbook.Sheets("InvoiceLog")
     Set wsPay = ThisWorkbook.Sheets("Payments")
-    ' Build the batch list from today's live owing, not a statement-period cutoff.
-    Set payIdx = BuildPaymentsIndex(wsPay, Date)
+    ' Default batch selection uses today's live owing, but callers can pass a cutoff when needed.
+    Set payIdx = BuildPaymentsIndex(wsPay, cutoff)
 
     last = ws.Cells(ws.Rows.Count, "A").End(xlUp).row
     For i = 2 To last
@@ -678,7 +681,7 @@ Private Function StmtDoctorsWithBalance(dept As String) As Collection
                     order.Add custID
                 End If
                 docNo = CStr(ws.Cells(i, 1).Value)
-                totals(key) = CDbl(totals(key)) + Num(ws.Cells(i, 12).Value) - PaymentsAsOfIdx(payIdx, docNo, Date)
+                totals(key) = CDbl(totals(key)) + Num(ws.Cells(i, 12).Value) - PaymentsAsOfIdx(payIdx, docNo, cutoff)
             End If
         End If
     Next i
@@ -731,10 +734,11 @@ Private Function PatientCredit(patientName As String) As Double
 
     lastCol = wsP.Cells(1, wsP.Columns.Count).End(xlToLeft).Column
     For i = 1 To lastCol
-        If InStr(1, LCase(Trim(CStr(wsP.Cells(1, i).Value))), "credit", vbTextCompare) > 0 Then
-            creditCol = i
-            Exit For
-        End If
+        Select Case UCase(Trim(CStr(wsP.Cells(1, i).Value)))
+            Case "CREDIT", "PATIENT CREDIT"
+                creditCol = i
+                Exit For
+        End Select
     Next i
     If creditCol = 0 Then Exit Function
 
@@ -786,17 +790,20 @@ Public Function PatientNamesList() As Collection
     Set PatientNamesList = col
 End Function
 
-Private Function PatientsWithBalance(dept As String) As Collection
+Private Function PatientsWithBalance(dept As String, Optional cutoffDate As Variant) As Collection
     Dim ws As Worksheet, wsMC As Worksheet, wsPay As Worksheet, payIdx As Object
     Dim last As Long, lastMC As Long, i As Long, nm As String, key As String, docNo As String
     Dim seen As Object, totals As Object, col As New Collection, order As New Collection
+    Dim cutoff As Date
+
+    If IsDate(cutoffDate) Then cutoff = CDate(cutoffDate) Else cutoff = Date
 
     Set seen = CreateObject("Scripting.Dictionary")
     Set totals = CreateObject("Scripting.Dictionary")
     Set ws = ThisWorkbook.Sheets("InvoiceLog")
     Set wsPay = ThisWorkbook.Sheets("Payments")
-    ' Build the batch list from today's live owing, not a statement-period cutoff.
-    Set payIdx = BuildPaymentsIndex(wsPay, Date)
+    ' Default batch selection uses today's live owing, but callers can pass a cutoff when needed.
+    Set payIdx = BuildPaymentsIndex(wsPay, cutoff)
     On Error Resume Next
     Set wsMC = ThisWorkbook.Sheets("MedAidLog")
     On Error GoTo 0
@@ -814,7 +821,7 @@ Private Function PatientsWithBalance(dept As String) As Collection
                     order.Add nm
                 End If
                 docNo = CStr(ws.Cells(i, 1).Value)
-                totals(key) = CDbl(totals(key)) + Num(ws.Cells(i, 12).Value) - PaymentsAsOfIdx(payIdx, docNo, Date)
+                totals(key) = CDbl(totals(key)) + Num(ws.Cells(i, 12).Value) - PaymentsAsOfIdx(payIdx, docNo, cutoff)
             End If
         End If
     Next i
@@ -832,7 +839,7 @@ Private Function PatientsWithBalance(dept As String) As Collection
                         order.Add nm
                     End If
                     docNo = CStr(wsMC.Cells(i, ML_NO).Value)
-                    totals(key) = CDbl(totals(key)) + Num(wsMC.Cells(i, ML_TOTAL).Value) - PaymentsAsOfIdx(payIdx, docNo, Date)
+                    totals(key) = CDbl(totals(key)) + Num(wsMC.Cells(i, ML_TOTAL).Value) - PaymentsAsOfIdx(payIdx, docNo, cutoff)
                 End If
             End If
         Next i
@@ -1322,4 +1329,3 @@ Private Function DeptStmtTitle(dept As String) As String
         Case Else: DeptStmtTitle = tWA & " / " & tWD & " Statement"
     End Select
 End Function
-
