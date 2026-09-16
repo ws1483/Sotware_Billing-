@@ -453,6 +453,7 @@ Private Function BuildAndRender(drName As String, dFrom As Date, dTo As Date, _
         End If
     Next i
 
+    ' Keep credit-only accounts renderable: only exit when both opening and stored credit are zero.
     If cnt = 0 And Abs(opening) < 0.005 And Abs(storedCredit) < 0.005 Then
         lastContentRow = 0: Set BuildAndRender = ws: Exit Function
     End If
@@ -1185,6 +1186,7 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
         End If
     Next i
 
+    ' Keep credit-only accounts renderable: only exit when both opening and stored credit are zero.
     If cnt = 0 And Abs(opening) < 0.005 And Abs(storedCredit) < 0.005 Then
         lastContentRow = 0: Set BuildAndRenderPatient = ws: Exit Function
     End If
