@@ -37,6 +37,10 @@ End Function
 Private Function PaymentEffectiveDate(rawDate As Variant, fallbackDate As Date, ByRef wasUndated As Boolean) As Date
     If IsDate(rawDate) Then
         PaymentEffectiveDate = CDate(rawDate)
+        If CDbl(PaymentEffectiveDate) <= 0 Then
+            PaymentEffectiveDate = fallbackDate
+            wasUndated = True
+        End If
     Else
         PaymentEffectiveDate = fallbackDate
         wasUndated = True
@@ -681,17 +685,6 @@ End Function
 Private Function DeptMatch(invNo As String, dept As String) As Boolean
     If UCase(dept) = "ALL" Or dept = "" Then DeptMatch = True: Exit Function
     DeptMatch = (InStr(1, UCase(invNo), UCase(dept)) > 0)
-End Function
-
-Private Function FindMCRow(wsMC As Worksheet, docNo As String) As Long
-    Dim last As Long, i As Long
-    last = wsMC.Cells(wsMC.Rows.Count, ML_NO).End(xlUp).row
-    For i = 2 To last
-        If NrmID(CStr(wsMC.Cells(i, ML_NO).Value)) = NrmID(docNo) Then
-            FindMCRow = i
-            Exit Function
-        End If
-    Next i
 End Function
 
 Private Function StmtDoctorsWithBalance(dept As String, cutoffDate As Date) As Collection
