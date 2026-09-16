@@ -232,7 +232,7 @@ Public Sub RunBatchStatements(dFrom As Date, dTo As Date, dept As String)
     Dim fpath As String
     On Error GoTo Fail
     mStmtInteractive = False
-    Set docs = StmtDoctorsWithBalance(dept)
+    Set docs = StmtDoctorsWithBalance(dept, Date)
     If docs.Count = 0 Then MsgBox "No doctors with an outstanding balance.", vbInformation: Exit Sub
     If MsgBox(docs.Count & " doctor(s) have a balance. Generate a PDF for each?", _
               vbQuestion + vbYesNo, "Batch Statements") <> vbYes Then Exit Sub
@@ -653,19 +653,19 @@ Private Function FindMCRow(wsMC As Worksheet, docNo As String) As Long
     Next i
 End Function
 
-Private Function StmtDoctorsWithBalance(dept As String, Optional cutoffDate As Variant) As Collection
+Private Function StmtDoctorsWithBalance(dept As String, cutoffDate As Date) As Collection
     Dim ws As Worksheet, wsPay As Worksheet, payIdx As Object
     Dim last As Long, i As Long, custID As String, docNo As String, key As String
     Dim seen As Object, totals As Object, order As New Collection, col As New Collection, drName As String
     Dim cutoff As Date
 
-    If IsDate(cutoffDate) Then cutoff = CDate(cutoffDate) Else cutoff = Date
+    cutoff = cutoffDate
 
     Set seen = CreateObject("Scripting.Dictionary")
     Set totals = CreateObject("Scripting.Dictionary")
     Set ws = ThisWorkbook.Sheets("InvoiceLog")
     Set wsPay = ThisWorkbook.Sheets("Payments")
-    ' Default batch selection uses today's live owing, but callers can pass a cutoff when needed.
+    ' Batch selection uses an explicit live cutoff supplied by the caller.
     Set payIdx = BuildPaymentsIndex(wsPay, cutoff)
 
     last = ws.Cells(ws.Rows.Count, "A").End(xlUp).row
@@ -790,19 +790,19 @@ Public Function PatientNamesList() As Collection
     Set PatientNamesList = col
 End Function
 
-Private Function PatientsWithBalance(dept As String, Optional cutoffDate As Variant) As Collection
+Private Function PatientsWithBalance(dept As String, cutoffDate As Date) As Collection
     Dim ws As Worksheet, wsMC As Worksheet, wsPay As Worksheet, payIdx As Object
     Dim last As Long, lastMC As Long, i As Long, nm As String, key As String, docNo As String
     Dim seen As Object, totals As Object, col As New Collection, order As New Collection
     Dim cutoff As Date
 
-    If IsDate(cutoffDate) Then cutoff = CDate(cutoffDate) Else cutoff = Date
+    cutoff = cutoffDate
 
     Set seen = CreateObject("Scripting.Dictionary")
     Set totals = CreateObject("Scripting.Dictionary")
     Set ws = ThisWorkbook.Sheets("InvoiceLog")
     Set wsPay = ThisWorkbook.Sheets("Payments")
-    ' Default batch selection uses today's live owing, but callers can pass a cutoff when needed.
+    ' Batch selection uses an explicit live cutoff supplied by the caller.
     Set payIdx = BuildPaymentsIndex(wsPay, cutoff)
     On Error Resume Next
     Set wsMC = ThisWorkbook.Sheets("MedAidLog")
@@ -892,7 +892,7 @@ Public Sub RunBatchPatientStatements(dFrom As Date, dTo As Date, dept As String)
     Dim tInv As Double, tPaid As Double, bDue As Double, fpath As String
     On Error GoTo Fail
     mStmtInteractive = False
-    Set pats = PatientsWithBalance(dept)
+    Set pats = PatientsWithBalance(dept, Date)
     If pats.Count = 0 Then MsgBox "No patients with an outstanding balance.", vbInformation: Exit Sub
     If MsgBox(pats.Count & " patient(s) have a balance. Generate a PDF for each?", _
               vbQuestion + vbYesNo, "Batch Patient Statements") <> vbYes Then Exit Sub
