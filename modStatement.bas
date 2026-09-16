@@ -95,6 +95,12 @@ Private Function PaymentsAsOf(wsPay As Worksheet, docNo As String, cutoff As Dat
     PaymentsAsOf = PaymentsAsOfIdx(idx, docNo, cutoff)
 End Function
 
+Private Function LiveOutstanding(docTotal As Double, idx As Object, docNo As String, cutoff As Date, _
+                                 Optional floorAtZero As Boolean = False) As Double
+    LiveOutstanding = docTotal - PaymentsAsOfIdx(idx, docNo, cutoff)
+    If floorAtZero And LiveOutstanding < 0 Then LiveOutstanding = 0
+End Function
+
 Private Function PaymentLineLabel(wsPay As Worksheet, payRow As Long, wasUndated As Boolean) As String
     Dim labelText As String, payKind As String, docNo As String
 
@@ -393,7 +399,7 @@ Private Function BuildAndRender(drName As String, dFrom As Date, dTo As Date, _
             invDate = CDate(wsLog.Cells(i, 4).Value)
             invTotal = Num(wsLog.Cells(i, 12).Value)
             If invDate < dFrom Then
-                opening = opening + (invTotal - PaymentsAsOfIdx(payIdx, CStr(wsLog.Cells(i, 1).Value), dFrom - 1))
+                opening = opening + LiveOutstanding(invTotal, payIdx, CStr(wsLog.Cells(i, 1).Value), dFrom - 1, True)
             ElseIf invDate <= dTo Then
                 cnt = cnt + 1: rowsArr(cnt) = i: dts(cnt) = CDbl(invDate): kinds(cnt) = "INV"
             End If
@@ -491,7 +497,7 @@ Private Function BuildAndRender(drName As String, dFrom As Date, dTo As Date, _
         If NrmID(CStr(wsLog.Cells(i, 6).Value)) = NrmID(custID) _
            And LCase(Trim(CStr(wsLog.Cells(i, 3).Value))) = "doctor" _
            And DeptMatch(CStr(wsLog.Cells(i, 1).Value), dept) Then
-            bal = Num(wsLog.Cells(i, 12).Value) - PaymentsAsOfIdx(payIdx, CStr(wsLog.Cells(i, 1).Value), dTo)
+            bal = LiveOutstanding(Num(wsLog.Cells(i, 12).Value), payIdx, CStr(wsLog.Cells(i, 1).Value), dTo)
             If bal > 0.005 Then
                 If IsDate(wsLog.Cells(i, 5).Value) Then
                     dueD = CDate(wsLog.Cells(i, 5).Value)
@@ -681,7 +687,7 @@ Private Function StmtDoctorsWithBalance(dept As String, cutoffDate As Date) As C
                     order.Add custID
                 End If
                 docNo = CStr(ws.Cells(i, 1).Value)
-                totals(key) = CDbl(totals(key)) + Num(ws.Cells(i, 12).Value) - PaymentsAsOfIdx(payIdx, docNo, cutoff)
+                totals(key) = CDbl(totals(key)) + LiveOutstanding(Num(ws.Cells(i, 12).Value), payIdx, docNo, cutoff, True)
             End If
         End If
     Next i
@@ -821,7 +827,7 @@ Private Function PatientsWithBalance(dept As String, cutoffDate As Date) As Coll
                     order.Add nm
                 End If
                 docNo = CStr(ws.Cells(i, 1).Value)
-                totals(key) = CDbl(totals(key)) + Num(ws.Cells(i, 12).Value) - PaymentsAsOfIdx(payIdx, docNo, cutoff)
+                totals(key) = CDbl(totals(key)) + LiveOutstanding(Num(ws.Cells(i, 12).Value), payIdx, docNo, cutoff, True)
             End If
         End If
     Next i
@@ -839,7 +845,7 @@ Private Function PatientsWithBalance(dept As String, cutoffDate As Date) As Coll
                         order.Add nm
                     End If
                     docNo = CStr(wsMC.Cells(i, ML_NO).Value)
-                    totals(key) = CDbl(totals(key)) + Num(wsMC.Cells(i, ML_TOTAL).Value) - PaymentsAsOfIdx(payIdx, docNo, cutoff)
+                    totals(key) = CDbl(totals(key)) + LiveOutstanding(Num(wsMC.Cells(i, ML_TOTAL).Value), payIdx, docNo, cutoff, True)
                 End If
             End If
         Next i
@@ -1069,7 +1075,7 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
             invDate = CDate(wsLog.Cells(i, 4).Value)
             invTotal = Num(wsLog.Cells(i, 12).Value)
             If invDate < dFrom Then
-                opening = opening + (invTotal - PaymentsAsOfIdx(payIdx, CStr(wsLog.Cells(i, 1).Value), dFrom - 1))
+                opening = opening + LiveOutstanding(invTotal, payIdx, CStr(wsLog.Cells(i, 1).Value), dFrom - 1, True)
             ElseIf invDate <= dTo Then
                 cnt = cnt + 1: rowsArr(cnt) = i: dts(cnt) = CDbl(invDate): kinds(cnt) = "INV"
             End If
@@ -1084,7 +1090,7 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
                 invDate = CDate(wsMC.Cells(i, ML_DATE).Value)
                 invTotal = Num(wsMC.Cells(i, ML_TOTAL).Value)
                 If invDate < dFrom Then
-                    opening = opening + (invTotal - PaymentsAsOfIdx(payIdx, CStr(wsMC.Cells(i, ML_NO).Value), dFrom - 1))
+                    opening = opening + LiveOutstanding(invTotal, payIdx, CStr(wsMC.Cells(i, ML_NO).Value), dFrom - 1, True)
                 ElseIf invDate <= dTo Then
                     cnt = cnt + 1: rowsArr(cnt) = i: dts(cnt) = CDbl(invDate): kinds(cnt) = "MC"
                 End If
@@ -1213,7 +1219,7 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
         If LCase(Trim(CStr(wsLog.Cells(i, 3).Value))) = "patient" _
            And NrmID(CStr(wsLog.Cells(i, 7).Value)) = NrmID(patientName) _
            And DeptMatch(CStr(wsLog.Cells(i, 1).Value), dept) Then
-            bal = Num(wsLog.Cells(i, 12).Value) - PaymentsAsOfIdx(payIdx, CStr(wsLog.Cells(i, 1).Value), dTo)
+            bal = LiveOutstanding(Num(wsLog.Cells(i, 12).Value), payIdx, CStr(wsLog.Cells(i, 1).Value), dTo)
             If bal > 0.005 Then
                 If IsDate(wsLog.Cells(i, 5).Value) Then
                     dueD = CDate(wsLog.Cells(i, 5).Value)
@@ -1237,7 +1243,7 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
         For i = 2 To lastMC
             If NrmID(CStr(wsMC.Cells(i, ML_PATIENT).Value)) = NrmID(patientName) _
                And DeptMatch(CStr(wsMC.Cells(i, ML_NO).Value), dept) Then
-                bal = Num(wsMC.Cells(i, ML_TOTAL).Value) - PaymentsAsOfIdx(payIdx, CStr(wsMC.Cells(i, ML_NO).Value), dTo)
+                bal = LiveOutstanding(Num(wsMC.Cells(i, ML_TOTAL).Value), payIdx, CStr(wsMC.Cells(i, ML_NO).Value), dTo)
                 If bal > 0.005 Then
                     If IsDate(wsMC.Cells(i, ML_DUE).Value) Then
                         dueD = CDate(wsMC.Cells(i, ML_DUE).Value)
