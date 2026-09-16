@@ -4,9 +4,9 @@ Option Explicit
 ' PATCHES:
 '  - locale-safe numeric reads via Num() (comma decimals -> full cents)
 '  - hardened ResetStatementSheet (never destroys data/log sheets)
-'  - OPENING BALANCE fix: pre-range invoices carry OUTSTANDING BALANCE (col O)
-'    into opening and are NOT re-rendered as lines (no more double-count)
-'  - pre-range payments are NOT subtracted from opening (opening already net)
+'  - opening/aging/list balances are derived live from doc totals minus indexed payments
+'  - undated payments are counted at the statement cutoff, logged to Debug.Print, and shown as blank-date '(undated)' ledger lines
+'  - patient statements also fold MedAidLog claims into opening, ledger, aging, and balance lists
 '  - unambiguous header dates (yyyy-mm-dd)
 Private Const VAT_RATE As Double = 0.15
 Private Const LINES_PER_PAGE As Long = 20
@@ -17,6 +17,10 @@ Private Const FOOTER_LAST_ROW As Long = 36
 Private Const TPL_SHEET As String = "StatementTpl"
 Private Const OUT_SHEET As String = "Statement"
 Private Const LOG_SHEET As String = "StatementLog"
+Private mStmtInteractive As Boolean
+Private mPaymentsIdx As Object
+Private mPaymentsIdxSheet As String
+Private mPaymentsIdxCutoff As Double
 
 Private Function NrmID(s As String) As String
     NrmID = UCase(Replace(Trim(s), " ", ""))
@@ -28,6 +32,139 @@ Private Function Num(v As Variant) As Double
     If Trim(CStr(v)) = "" Then Num = 0: Exit Function
     If IsNumeric(v) Then Num = CDbl(v) Else Num = 0
 End Function
+
+Private Function PaymentEffectiveDate(rawDate As Variant, fallbackDate As Date, ByRef wasUndated As Boolean) As Date
+    If IsDate(rawDate) Then
+        PaymentEffectiveDate = CDate(rawDate)
+        If CDbl(PaymentEffectiveDate) <= 0 Then
+            PaymentEffectiveDate = fallbackDate
+            wasUndated = True
+        End If
+    Else
+        PaymentEffectiveDate = fallbackDate
+        wasUndated = True
+    End If
+End Function
+
+Private Function BuildPaymentsIndex(wsPay As Worksheet, undatedAsOf As Date) As Object
+    Dim idx As Object, entries As Collection, entry As Variant
+    Dim lastP As Long, i As Long, docKey As String
+    Dim payID As String, kind As String, pAmt As Double
+    Dim effDate As Date, wasUndated As Boolean
+
+    Set idx = CreateObject("Scripting.Dictionary")
+    lastP = wsPay.Cells(wsPay.Rows.Count, 1).End(xlUp).row
+    For i = 2 To lastP
+        docKey = NrmID(CStr(wsPay.Cells(i, 2).Value))
+        If docKey <> "" Then
+            If Not idx.Exists(docKey) Then
+                Set entries = New Collection
+                idx.Add docKey, entries
+            End If
+            Set entries = idx(docKey)
+            payID = CStr(wsPay.Cells(i, 1).Value)
+            pAmt = Num(wsPay.Cells(i, 4).Value)
+            kind = CStr(wsPay.Cells(i, 5).Value)
+            wasUndated = False
+            effDate = PaymentEffectiveDate(wsPay.Cells(i, 3).Value, undatedAsOf, wasUndated)
+            If wasUndated Then
+                Debug.Print "Undated payment treated as " & Format(undatedAsOf, "yyyy-mm-dd") & _
+                            " for statement sums; Doc=" & CStr(wsPay.Cells(i, 2).Value) & _
+                            " PayID=" & payID & " Amount=" & Format(pAmt, "0.00")
+            End If
+            entry = Array(CDbl(effDate), pAmt, kind, payID, wasUndated)
+            entries.Add entry
+        End If
+    Next i
+    Set BuildPaymentsIndex = idx
+End Function
+
+Private Function CachedPaymentsIndex(wsPay As Worksheet, undatedAsOf As Date) As Object
+    If mPaymentsIdx Is Nothing _
+       Or mPaymentsIdxSheet <> wsPay.Name _
+       Or mPaymentsIdxCutoff <> CDbl(undatedAsOf) Then
+        Set mPaymentsIdx = BuildPaymentsIndex(wsPay, undatedAsOf)
+        mPaymentsIdxSheet = wsPay.Name
+        mPaymentsIdxCutoff = CDbl(undatedAsOf)
+    End If
+    Set CachedPaymentsIndex = mPaymentsIdx
+End Function
+
+Private Function PaymentsAsOfIdx(idx As Object, docNo As String, cutoff As Date) As Double
+    Dim entries As Collection, entry As Variant
+    Dim docKey As String
+
+    If idx Is Nothing Then Exit Function
+    docKey = NrmID(docNo)
+    If docKey = "" Then Exit Function
+    If Not idx.Exists(docKey) Then Exit Function
+
+    Set entries = idx(docKey)
+    For Each entry In entries
+        If CDbl(entry(0)) <= CDbl(cutoff) Then
+            PaymentsAsOfIdx = PaymentsAsOfIdx + Num(entry(1))
+        End If
+    Next entry
+End Function
+
+Private Function PaymentsAsOf(wsPay As Worksheet, docNo As String, cutoff As Date) As Double
+    Dim idx As Object
+    Set idx = CachedPaymentsIndex(wsPay, cutoff)
+    PaymentsAsOf = PaymentsAsOfIdx(idx, docNo, cutoff)
+End Function
+
+Private Function LiveOutstanding(docTotal As Double, idx As Object, docNo As String, cutoff As Date, _
+                                 Optional floorAtZero As Boolean = False) As Double
+    LiveOutstanding = docTotal - PaymentsAsOfIdx(idx, docNo, cutoff)
+    If floorAtZero And LiveOutstanding < 0 Then LiveOutstanding = 0
+End Function
+
+Private Function PaymentLineLabel(wsPay As Worksheet, payRow As Long, wasUndated As Boolean) As String
+    Dim labelText As String, payKind As String, docNo As String
+
+    docNo = CStr(wsPay.Cells(payRow, 2).Value)
+    payKind = UCase(Trim(CStr(wsPay.Cells(payRow, 5).Value)))
+    If InStr(1, payKind, "CREDIT NOTE", vbTextCompare) > 0 Then
+        labelText = "Credit Note - " & docNo
+    Else
+        labelText = "Payment - " & docNo
+    End If
+    If wasUndated Then labelText = labelText & " (undated)"
+    PaymentLineLabel = labelText
+End Function
+
+Private Sub QueuePaymentEntry(wsPay As Worksheet, payRow As Long, dFrom As Date, dTo As Date, _
+                              ByRef cnt As Long, ByRef rowsArr() As Long, ByRef dts() As Double, _
+                              ByRef kinds() As String, ByRef undateds() As Boolean)
+    Dim pDate As Date, wasUndated As Boolean
+
+    wasUndated = False
+    pDate = PaymentEffectiveDate(wsPay.Cells(payRow, 3).Value, dTo, wasUndated)
+    If pDate >= dFrom And pDate <= dTo Then
+        cnt = cnt + 1
+        rowsArr(cnt) = payRow
+        dts(cnt) = CDbl(pDate)
+        kinds(cnt) = "PAY"
+        undateds(cnt) = wasUndated
+    End If
+End Sub
+
+Private Sub CheckAgingReconciliation(entityName As String, dFrom As Date, dTo As Date, _
+                                     ageCur As Double, age30 As Double, age60 As Double, age90 As Double, _
+                                     grossOutstanding As Double)
+    Dim agingSum As Double, expectedGross As Double, msg As String
+
+    agingSum = Round(ageCur + age30 + age60 + age90, 2)
+    expectedGross = Round(grossOutstanding, 2)
+    If Abs(agingSum - expectedGross) > 0.01 Then
+        msg = "Statement aging mismatch for " & entityName & _
+              " (" & Format(dFrom, "yyyy-mm-dd") & " to " & Format(dTo, "yyyy-mm-dd") & _
+              "): Aging=" & Format(agingSum, "0.00") & _
+              " GrossBeforeCredit=" & Format(expectedGross, "0.00")
+        Debug.Print msg
+        If mStmtInteractive Then MsgBox msg, vbExclamation, "Statement Reconciliation"
+    End If
+End Sub
 
 Public Sub GenStatement()
     frmStatement.Show
@@ -98,10 +235,12 @@ Public Sub RunSingleStatement(drName As String, dFrom As Date, dTo As Date, dept
     Dim ws As Worksheet, lastRow As Long, ans As VbMsgBoxResult, folder As String
     Dim custID As String, tInv As Double, tPaid As Double, cr As Double, bDue As Double
     On Error GoTo Fail
+    mStmtInteractive = True
     Application.ScreenUpdating = False
     Set ws = BuildAndRender(drName, dFrom, dTo, dept, lastRow, _
                             custID, tInv, tPaid, cr, bDue)
     Application.ScreenUpdating = True
+    mStmtInteractive = False
     If lastRow = 0 Then
         MsgBox "No transactions/outstanding invoices for " & drName & ".", vbInformation
         Exit Sub
@@ -120,6 +259,7 @@ Public Sub RunSingleStatement(drName As String, dFrom As Date, dTo As Date, dept
     End If
     Exit Sub
 Fail:
+    mStmtInteractive = False
     Application.ScreenUpdating = True
     MsgBox "RunSingleStatement error: " & Err.Description, vbExclamation
 End Sub
@@ -131,7 +271,8 @@ Public Sub RunBatchStatements(dFrom As Date, dTo As Date, dept As String)
     Dim custID As String, tInv As Double, tPaid As Double, cr As Double, bDue As Double
     Dim fpath As String
     On Error GoTo Fail
-    Set docs = StmtDoctorsWithBalance(dept)
+    mStmtInteractive = False
+    Set docs = StmtDoctorsWithBalance(dept, Date)
     If docs.Count = 0 Then MsgBox "No doctors with an outstanding balance.", vbInformation: Exit Sub
     If MsgBox(docs.Count & " doctor(s) have a balance. Generate a PDF for each?", _
               vbQuestion + vbYesNo, "Batch Statements") <> vbYes Then Exit Sub
@@ -153,6 +294,7 @@ Public Sub RunBatchStatements(dFrom As Date, dTo As Date, dept As String)
     MsgBox made & " statement PDF(s) saved & logged to:" & vbCrLf & folder, vbInformation
     Exit Sub
 Fail:
+    mStmtInteractive = False
     Application.ScreenUpdating = True
     MsgBox "RunBatchStatements error: " & Err.Description, vbExclamation
 End Sub
@@ -251,70 +393,67 @@ Private Function BuildAndRender(drName As String, dFrom As Date, dTo As Date, _
                                ByRef outTotPaid As Double, ByRef outCredit As Double, _
                                ByRef outBalDue As Double) As Worksheet
     Dim ws As Worksheet, wsLog As Worksheet, wsPay As Worksheet
+    Dim payIdx As Object
     Dim custID As String, last As Long, i As Long, j As Long
-    Dim opening As Double, credit As Double
-    Dim rowsArr() As Long, dts() As Double, kinds() As String, cnt As Long
-    Dim tL As Long, tD As Double, tS As String
+    Dim opening As Double, storedCredit As Double
+    Dim rowsArr() As Long, dts() As Double, kinds() As String, undateds() As Boolean, cnt As Long
+    Dim tL As Long, tD As Double, tS As String, tB As Boolean
     Dim r As Long, running As Double
     Dim totalInv As Double, totalPaid As Double
     Dim ageCur As Double, age30 As Double, age60 As Double, age90 As Double
     Dim bal As Double, dueD As Date, days As Long
-    Dim invDate As Date, invTotal As Double, invBal As Double
-    Dim lastP As Long, pInv As String, pDate As Date, pAmt As Double, logRow As Long
+    Dim invDate As Date, invTotal As Double
+    Dim lastP As Long, pInv As String, pAmt As Double, logRow As Long
+    Dim totalLines As Long, availRows As Long, needRows As Long, off As Long
+    Dim grossOut As Double, grossCheck As Double, balDue As Double, excl As Double, vat As Double
 
     Set ws = ResetStatementSheet()
     Set wsLog = ThisWorkbook.Sheets("InvoiceLog")
     Set wsPay = ThisWorkbook.Sheets("Payments")
+    Set payIdx = BuildPaymentsIndex(wsPay, dTo)
     custID = DrNameToCustIDp(drName)
     outCustID = custID
-    credit = DoctorCreditp(custID)
+    storedCredit = DoctorCreditp(custID)
     RenderStatementHeader ws, drName, custID, dFrom, dTo, dept
 
     last = wsLog.Cells(wsLog.Rows.Count, "A").End(xlUp).row
-    ReDim rowsArr(1 To (last + 50) * 2)
-    ReDim dts(1 To (last + 50) * 2)
-    ReDim kinds(1 To (last + 50) * 2)
+    lastP = wsPay.Cells(wsPay.Rows.Count, "A").End(xlUp).row
+    ReDim rowsArr(1 To last + lastP + 10)
+    ReDim dts(1 To last + lastP + 10)
+    ReDim kinds(1 To last + lastP + 10)
+    ReDim undateds(1 To last + lastP + 10)
     cnt = 0: opening = 0
 
     ' ---- invoices ----
     For i = 2 To last
         If NrmID(CStr(wsLog.Cells(i, 6).Value)) = NrmID(custID) _
-           And UCase(CStr(wsLog.Cells(i, 3).Value)) = "DOCTOR" _
+           And LCase(Trim(CStr(wsLog.Cells(i, 3).Value))) = "doctor" _
            And DeptMatch(CStr(wsLog.Cells(i, 1).Value), dept) Then
             invDate = CDate(wsLog.Cells(i, 4).Value)
             invTotal = Num(wsLog.Cells(i, 12).Value)
-            invBal = Num(wsLog.Cells(i, 15).Value)
             If invDate < dFrom Then
-                ' before range: carry OUTSTANDING BALANCE into opening, no line
-                opening = opening + invBal
+                opening = opening + LiveOutstanding(invTotal, payIdx, CStr(wsLog.Cells(i, 1).Value), dFrom - 1, True)
             ElseIf invDate <= dTo Then
-                ' in range: show as a ledger line
                 cnt = cnt + 1: rowsArr(cnt) = i: dts(cnt) = CDbl(invDate): kinds(cnt) = "INV"
             End If
         End If
     Next i
 
     ' ---- payments ----
-    lastP = wsPay.Cells(wsPay.Rows.Count, "A").End(xlUp).row
     For i = 2 To lastP
         pInv = CStr(wsPay.Cells(i, 2).Value)
         logRow = FindLogRow(wsLog, pInv)
         If logRow > 0 Then
             If NrmID(CStr(wsLog.Cells(logRow, 6).Value)) = NrmID(custID) _
-               And UCase(CStr(wsLog.Cells(logRow, 3).Value)) = "DOCTOR" _
+               And LCase(Trim(CStr(wsLog.Cells(logRow, 3).Value))) = "doctor" _
                And DeptMatch(pInv, dept) Then
-                pDate = CDate(wsPay.Cells(i, 3).Value)
-                pAmt = Num(wsPay.Cells(i, 4).Value)
-                ' opening already reflects balances net of ALL payments to date,
-                ' so only show IN-RANGE payments as lines
-                If pDate >= dFrom And pDate <= dTo Then
-                    cnt = cnt + 1: rowsArr(cnt) = i: dts(cnt) = CDbl(pDate): kinds(cnt) = "PAY"
-                End If
+                QueuePaymentEntry wsPay, i, dFrom, dTo, cnt, rowsArr, dts, kinds, undateds
             End If
         End If
     Next i
 
-    If cnt = 0 And Abs(opening) < 0.005 And credit < 0.005 Then
+    ' Keep credit-only accounts renderable: only exit when both opening and stored credit are zero.
+    If cnt = 0 And Abs(opening) < 0.005 And Abs(storedCredit) < 0.005 Then
         lastContentRow = 0: Set BuildAndRender = ws: Exit Function
     End If
 
@@ -325,12 +464,12 @@ Private Function BuildAndRender(drName As String, dFrom As Date, dTo As Date, _
                 tD = dts(j): dts(j) = dts(j + 1): dts(j + 1) = tD
                 tL = rowsArr(j): rowsArr(j) = rowsArr(j + 1): rowsArr(j + 1) = tL
                 tS = kinds(j): kinds(j) = kinds(j + 1): kinds(j + 1) = tS
+                tB = undateds(j): undateds(j) = undateds(j + 1): undateds(j + 1) = tB
             End If
         Next j
     Next i
 
     ' ==== SHIFT totals block DOWN first ====
-    Dim totalLines As Long, availRows As Long, needRows As Long, off As Long
     totalLines = 1 + cnt
     availRows = TOTALS_ORIG_ROW - FIRST_LINE_ROW
     needRows = totalLines + GAP_ROWS - availRows
@@ -365,9 +504,13 @@ Private Function BuildAndRender(drName As String, dFrom As Date, dTo As Date, _
             pAmt = Num(wsPay.Cells(rowsArr(i), 4).Value)
             running = running - pAmt
             totalPaid = totalPaid + pAmt
-            ws.Cells(r, 1).Value = Format(CDate(wsPay.Cells(rowsArr(i), 3).Value), "dd/mm/yyyy")
+            If undateds(i) Then
+                ws.Cells(r, 1).Value = ""
+            Else
+                ws.Cells(r, 1).Value = Format(CDate(wsPay.Cells(rowsArr(i), 3).Value), "dd/mm/yyyy")
+            End If
             ws.Cells(r, 2).Value = wsPay.Cells(rowsArr(i), 1).Value
-            ws.Cells(r, 3).Value = "Payment - " & wsPay.Cells(rowsArr(i), 2).Value
+            ws.Cells(r, 3).Value = PaymentLineLabel(wsPay, rowsArr(i), undateds(i))
             ws.Cells(r, 6).Value = pAmt
             ws.Cells(r, 8).Value = running
         End If
@@ -378,9 +521,9 @@ Private Function BuildAndRender(drName As String, dFrom As Date, dTo As Date, _
     ageCur = 0: age30 = 0: age60 = 0: age90 = 0
     For i = 2 To last
         If NrmID(CStr(wsLog.Cells(i, 6).Value)) = NrmID(custID) _
-           And UCase(CStr(wsLog.Cells(i, 3).Value)) = "DOCTOR" _
+           And LCase(Trim(CStr(wsLog.Cells(i, 3).Value))) = "doctor" _
            And DeptMatch(CStr(wsLog.Cells(i, 1).Value), dept) Then
-            bal = Num(wsLog.Cells(i, 15).Value)
+            bal = LiveOutstanding(Num(wsLog.Cells(i, 12).Value), payIdx, CStr(wsLog.Cells(i, 1).Value), dTo)
             If bal > 0.005 Then
                 If IsDate(wsLog.Cells(i, 5).Value) Then
                     dueD = CDate(wsLog.Cells(i, 5).Value)
@@ -402,20 +545,27 @@ Private Function BuildAndRender(drName As String, dFrom As Date, dTo As Date, _
     Next i
 
     ' ---- totals ----
-    Dim grossOut As Double, balDue As Double, excl As Double, vat As Double
-    grossOut = running: If grossOut < 0 Then grossOut = 0
-    credit = Round(credit, 2)
-    balDue = Round(grossOut - credit, 2): If balDue < 0 Then balDue = 0
-    excl = Round(balDue / (1 + VAT_RATE), 2)
-    vat = Round(balDue - excl, 2)
     totalInv = Round(totalInv, 2)
     totalPaid = Round(totalPaid, 2)
     ageCur = Round(ageCur, 2): age30 = Round(age30, 2)
     age60 = Round(age60, 2): age90 = Round(age90, 2)
+    storedCredit = Round(storedCredit, 2)
+    grossCheck = Round(running, 2)
+    grossOut = Round(ageCur + age30 + age60 + age90, 2)
+    balDue = Round(grossOut - storedCredit, 2)
+    CheckAgingReconciliation drName, dFrom, dTo, ageCur, age30, age60, age90, grossCheck
+    If balDue >= 0 Then
+        excl = Round(balDue / (1 + VAT_RATE), 2)
+        vat = Round(balDue - excl, 2)
+    Else
+        ' Show statement credit entirely as VAT-exclusive; never present negative output VAT.
+        excl = balDue
+        vat = 0
+    End If
 
     ws.Range("H" & (19 + off)).Value = totalInv
     ws.Range("H" & (20 + off)).Value = totalPaid
-    ws.Range("H" & (21 + off)).Value = credit
+    ws.Range("H" & (21 + off)).Value = storedCredit
     ws.Range("H" & (22 + off)).Value = excl
     ws.Range("H" & (23 + off)).Value = vat
     ws.Range("H" & (24 + off)).Value = balDue
@@ -429,7 +579,7 @@ Private Function BuildAndRender(drName As String, dFrom As Date, dTo As Date, _
 
     outTotInv = totalInv
     outTotPaid = totalPaid
-    outCredit = credit
+    outCredit = storedCredit
     outBalDue = balDue
 
     lastContentRow = FOOTER_LAST_ROW + off
@@ -520,28 +670,62 @@ Private Function FindLogRow(wsLog As Worksheet, invNo As String) As Long
     Next i
 End Function
 
+Private Function BuildRowIndex(ws As Worksheet, keyCol As Long) As Object
+    Dim idx As Object, last As Long, i As Long, key As String
+
+    Set idx = CreateObject("Scripting.Dictionary")
+    last = ws.Cells(ws.Rows.Count, keyCol).End(xlUp).row
+    For i = 2 To last
+        key = NrmID(CStr(ws.Cells(i, keyCol).Value))
+        If key <> "" Then idx(key) = i
+    Next i
+    Set BuildRowIndex = idx
+End Function
+
 Private Function DeptMatch(invNo As String, dept As String) As Boolean
     If UCase(dept) = "ALL" Or dept = "" Then DeptMatch = True: Exit Function
     DeptMatch = (InStr(1, UCase(invNo), UCase(dept)) > 0)
 End Function
 
-Private Function StmtDoctorsWithBalance(dept As String) As Collection
-    Dim ws As Worksheet, last As Long, i As Long, custID As String
-    Dim seen As Object, col As New Collection, drName As String
+Private Function StmtDoctorsWithBalance(dept As String, cutoffDate As Date) As Collection
+    Dim ws As Worksheet, wsPay As Worksheet, payIdx As Object
+    Dim last As Long, i As Long, custID As String, docNo As String, key As String
+    Dim seen As Object, totals As Object, order As New Collection, col As New Collection, drName As String
+    Dim cutoff As Date
+
+    cutoff = cutoffDate
+
     Set seen = CreateObject("Scripting.Dictionary")
+    Set totals = CreateObject("Scripting.Dictionary")
     Set ws = ThisWorkbook.Sheets("InvoiceLog")
+    Set wsPay = ThisWorkbook.Sheets("Payments")
+    ' Batch selection uses an explicit live cutoff supplied by the caller.
+    Set payIdx = BuildPaymentsIndex(wsPay, cutoff)
+
     last = ws.Cells(ws.Rows.Count, "A").End(xlUp).row
     For i = 2 To last
-        If UCase(CStr(ws.Cells(i, 3).Value)) = "DOCTOR" _
+        If LCase(Trim(CStr(ws.Cells(i, 3).Value))) = "doctor" _
            And DeptMatch(CStr(ws.Cells(i, 1).Value), dept) Then
-            If Num(ws.Cells(i, 15).Value) > 0.005 Then
-                custID = CStr(ws.Cells(i, 6).Value)
-                If Not seen.Exists(NrmID(custID)) Then
-                    seen.Add NrmID(custID), 1
-                    drName = CustIDToDrNamep(custID)
-                    If drName <> "" Then col.Add drName
+            custID = CStr(ws.Cells(i, 6).Value)
+            key = NrmID(custID)
+            If key <> "" Then
+                If Not seen.Exists(key) Then
+                    seen.Add key, custID
+                    totals.Add key, 0#
+                    order.Add custID
                 End If
+                docNo = CStr(ws.Cells(i, 1).Value)
+                totals(key) = CDbl(totals(key)) + LiveOutstanding(Num(ws.Cells(i, 12).Value), payIdx, docNo, cutoff, True)
             End If
+        End If
+    Next i
+
+    For i = 1 To order.Count
+        custID = CStr(order(i))
+        key = NrmID(custID)
+        If CDbl(totals(key)) - DoctorCreditp(custID) > 0.005 Then
+            drName = CustIDToDrNamep(custID)
+            If drName <> "" Then col.Add drName
         End If
     Next i
     Set StmtDoctorsWithBalance = col
@@ -574,11 +758,68 @@ Private Function DoctorCreditp(custID As String) As Double
     Next i
 End Function
 
+Private Function BuildPatientCreditIndex() As Object
+    Dim wsP As Worksheet, last As Long, lastCol As Long, i As Long
+    Dim creditCol As Long, keyCol As Long, nameCol As Long
+    Dim hdr As String, keyVal As String, nameVal As String
+    Dim idx As Object
+
+    Set idx = CreateObject("Scripting.Dictionary")
+    On Error Resume Next
+    Set wsP = ThisWorkbook.Sheets("Patients")
+    On Error GoTo 0
+    If wsP Is Nothing Then
+        Set BuildPatientCreditIndex = idx
+        Exit Function
+    End If
+
+    lastCol = wsP.Cells(1, wsP.Columns.Count).End(xlToLeft).Column
+    For i = 1 To lastCol
+        hdr = UCase(Trim(CStr(wsP.Cells(1, i).Value)))
+        Select Case hdr
+            Case "CREDIT", "PATIENT CREDIT"
+                creditCol = i
+                Exit For
+            Case "PATIENT ID", "ID"
+                If keyCol = 0 Then keyCol = i
+            Case "PATIENT", "PATIENT NAME", "NAME"
+                If nameCol = 0 Then nameCol = i
+        End Select
+    Next i
+    If creditCol = 0 Then
+        Set BuildPatientCreditIndex = idx
+        Exit Function
+    End If
+    If keyCol = 0 Then keyCol = 1
+    If nameCol = 0 Then nameCol = 2
+
+    last = wsP.Cells(wsP.Rows.Count, keyCol).End(xlUp).row
+    If wsP.Cells(wsP.Rows.Count, nameCol).End(xlUp).row > last Then last = wsP.Cells(wsP.Rows.Count, nameCol).End(xlUp).row
+    If wsP.Cells(wsP.Rows.Count, creditCol).End(xlUp).row > last Then last = wsP.Cells(wsP.Rows.Count, creditCol).End(xlUp).row
+    For i = 2 To last
+        keyVal = NrmID(CStr(wsP.Cells(i, keyCol).Value))
+        nameVal = NrmID(CStr(wsP.Cells(i, nameCol).Value))
+        If keyVal <> "" Then idx(keyVal) = Num(wsP.Cells(i, creditCol).Value)
+        If nameVal <> "" Then idx(nameVal) = Num(wsP.Cells(i, creditCol).Value)
+    Next i
+    Set BuildPatientCreditIndex = idx
+End Function
+
+Private Function PatientCreditFromIdx(idx As Object, patientName As String) As Double
+    Dim key As String
+
+    If idx Is Nothing Then Exit Function
+    key = NrmID(patientName)
+    If key <> "" Then
+        If idx.Exists(key) Then PatientCreditFromIdx = Num(idx(key))
+    End If
+End Function
+
 ' ============================================================================
 ' PATIENT STATEMENTS
 ' ============================================================================
 Public Function PatientNamesList() As Collection
-    Dim ws As Worksheet, last As Long, i As Long, nm As String
+    Dim ws As Worksheet, wsMC As Worksheet, last As Long, lastMC As Long, i As Long, nm As String
     Dim seen As Object, col As New Collection
     Set seen = CreateObject("Scripting.Dictionary")
     Set ws = ThisWorkbook.Sheets("InvoiceLog")
@@ -594,37 +835,99 @@ Public Function PatientNamesList() As Collection
             End If
         End If
     Next i
-    Set PatientNamesList = col
-End Function
-
-Private Function PatientsWithBalance(dept As String) As Collection
-    Dim ws As Worksheet, last As Long, i As Long, nm As String
-    Dim seen As Object, col As New Collection
-    Set seen = CreateObject("Scripting.Dictionary")
-    Set ws = ThisWorkbook.Sheets("InvoiceLog")
-    last = ws.Cells(ws.Rows.Count, "A").End(xlUp).row
-    For i = 2 To last
-        If LCase(Trim(CStr(ws.Cells(i, 3).Value))) = "patient" _
-           And DeptMatch(CStr(ws.Cells(i, 1).Value), dept) Then
-            If Num(ws.Cells(i, 15).Value) > 0.005 Then
-                nm = Trim(CStr(ws.Cells(i, 7).Value))
-                If nm <> "" And Not seen.Exists(NrmID(nm)) Then
+    On Error Resume Next
+    Set wsMC = ThisWorkbook.Sheets("MedAidLog")
+    On Error GoTo 0
+    If Not wsMC Is Nothing Then
+        lastMC = wsMC.Cells(wsMC.Rows.Count, ML_NO).End(xlUp).row
+        For i = 2 To lastMC
+            nm = Trim(CStr(wsMC.Cells(i, ML_PATIENT).Value))
+            If nm <> "" Then
+                If Not seen.Exists(NrmID(nm)) Then
                     seen.Add NrmID(nm), 1
                     col.Add nm
                 End If
             End If
+        Next i
+    End If
+    Set PatientNamesList = col
+End Function
+
+Private Function PatientsWithBalance(dept As String, cutoffDate As Date) As Collection
+    Dim ws As Worksheet, wsMC As Worksheet, wsPay As Worksheet, payIdx As Object
+    Dim last As Long, lastMC As Long, i As Long, nm As String, key As String, docNo As String
+    Dim seen As Object, totals As Object, col As New Collection, order As New Collection
+    Dim patientCreditIdx As Object
+    Dim cutoff As Date
+
+    cutoff = cutoffDate
+
+    Set seen = CreateObject("Scripting.Dictionary")
+    Set totals = CreateObject("Scripting.Dictionary")
+    Set ws = ThisWorkbook.Sheets("InvoiceLog")
+    Set wsPay = ThisWorkbook.Sheets("Payments")
+    ' Batch selection uses an explicit live cutoff supplied by the caller.
+    Set payIdx = BuildPaymentsIndex(wsPay, cutoff)
+    Set patientCreditIdx = BuildPatientCreditIndex()
+    On Error Resume Next
+    Set wsMC = ThisWorkbook.Sheets("MedAidLog")
+    On Error GoTo 0
+
+    last = ws.Cells(ws.Rows.Count, "A").End(xlUp).row
+    For i = 2 To last
+        If LCase(Trim(CStr(ws.Cells(i, 3).Value))) = "patient" _
+           And DeptMatch(CStr(ws.Cells(i, 1).Value), dept) Then
+            nm = Trim(CStr(ws.Cells(i, 7).Value))
+            key = NrmID(nm)
+            If key <> "" Then
+                If Not seen.Exists(key) Then
+                    seen.Add key, nm
+                    totals.Add key, 0#
+                    order.Add nm
+                End If
+                docNo = CStr(ws.Cells(i, 1).Value)
+                totals(key) = CDbl(totals(key)) + LiveOutstanding(Num(ws.Cells(i, 12).Value), payIdx, docNo, cutoff, True)
+            End If
         End If
     Next i
+
+    If Not wsMC Is Nothing Then
+        lastMC = wsMC.Cells(wsMC.Rows.Count, ML_NO).End(xlUp).row
+        For i = 2 To lastMC
+            If DeptMatch(CStr(wsMC.Cells(i, ML_NO).Value), dept) Then
+                nm = Trim(CStr(wsMC.Cells(i, ML_PATIENT).Value))
+                key = NrmID(nm)
+                If key <> "" Then
+                    If Not seen.Exists(key) Then
+                        seen.Add key, nm
+                        totals.Add key, 0#
+                        order.Add nm
+                    End If
+                    docNo = CStr(wsMC.Cells(i, ML_NO).Value)
+                    totals(key) = CDbl(totals(key)) + LiveOutstanding(Num(wsMC.Cells(i, ML_TOTAL).Value), payIdx, docNo, cutoff, True)
+                End If
+            End If
+        Next i
+    End If
+
+    For i = 1 To order.Count
+        nm = CStr(order(i))
+        key = NrmID(nm)
+        If CDbl(totals(key)) - PatientCreditFromIdx(patientCreditIdx, nm) > 0.005 Then col.Add nm
+    Next i
+
     Set PatientsWithBalance = col
 End Function
 
 Public Sub RunSinglePatientStatement(patientName As String, dFrom As Date, dTo As Date, dept As String)
     Dim ws As Worksheet, lastRow As Long, ans As VbMsgBoxResult, folder As String
-    Dim tInv As Double, tPaid As Double, bDue As Double
+    Dim tInv As Double, tPaid As Double, cr As Double, bDue As Double
     On Error GoTo Fail
+    mStmtInteractive = True
     Application.ScreenUpdating = False
-    Set ws = BuildAndRenderPatient(patientName, dFrom, dTo, dept, lastRow, tInv, tPaid, bDue)
+    Set ws = BuildAndRenderPatient(patientName, dFrom, dTo, dept, lastRow, tInv, tPaid, cr, bDue)
     Application.ScreenUpdating = True
+    mStmtInteractive = False
     If lastRow = 0 Then
         MsgBox "No transactions/outstanding invoices for " & patientName & ".", vbInformation
         Exit Sub
@@ -637,12 +940,13 @@ Public Sub RunSinglePatientStatement(patientName As String, dFrom As Date, dTo A
         If folder <> "" Then
             Dim fpath As String
             fpath = ExportStatementPDFp(ws, patientName, dFrom, dTo, folder)
-            LogStatementPatient patientName, dept, dFrom, dTo, tInv, tPaid, bDue, fpath
+            LogStatementPatient patientName, dept, dFrom, dTo, tInv, tPaid, cr, bDue, fpath
             MsgBox "Statement PDF saved and logged.", vbInformation
         End If
     End If
     Exit Sub
 Fail:
+    mStmtInteractive = False
     Application.ScreenUpdating = True
     MsgBox "RunSinglePatientStatement error: " & Err.Description, vbExclamation
 End Sub
@@ -650,9 +954,10 @@ End Sub
 Public Sub RunBatchPatientStatements(dFrom As Date, dTo As Date, dept As String)
     Dim pats As Collection, i As Long, ws As Worksheet, lastRow As Long
     Dim patientName As String, made As Long, folder As String
-    Dim tInv As Double, tPaid As Double, bDue As Double, fpath As String
+    Dim tInv As Double, tPaid As Double, cr As Double, bDue As Double, fpath As String
     On Error GoTo Fail
-    Set pats = PatientsWithBalance(dept)
+    mStmtInteractive = False
+    Set pats = PatientsWithBalance(dept, Date)
     If pats.Count = 0 Then MsgBox "No patients with an outstanding balance.", vbInformation: Exit Sub
     If MsgBox(pats.Count & " patient(s) have a balance. Generate a PDF for each?", _
               vbQuestion + vbYesNo, "Batch Patient Statements") <> vbYes Then Exit Sub
@@ -662,10 +967,10 @@ Public Sub RunBatchPatientStatements(dFrom As Date, dTo As Date, dept As String)
     made = 0
     For i = 1 To pats.Count
         patientName = pats(i)
-        Set ws = BuildAndRenderPatient(patientName, dFrom, dTo, dept, lastRow, tInv, tPaid, bDue)
+        Set ws = BuildAndRenderPatient(patientName, dFrom, dTo, dept, lastRow, tInv, tPaid, cr, bDue)
         If lastRow > 0 Then
             fpath = ExportStatementPDFp(ws, patientName, dFrom, dTo, folder)
-            LogStatementPatient patientName, dept, dFrom, dTo, tInv, tPaid, bDue, fpath
+            LogStatementPatient patientName, dept, dFrom, dTo, tInv, tPaid, cr, bDue, fpath
             made = made + 1
         End If
     Next i
@@ -673,13 +978,14 @@ Public Sub RunBatchPatientStatements(dFrom As Date, dTo As Date, dept As String)
     MsgBox made & " patient statement PDF(s) saved & logged to:" & vbCrLf & folder, vbInformation
     Exit Sub
 Fail:
+    mStmtInteractive = False
     Application.ScreenUpdating = True
     MsgBox "RunBatchPatientStatements error: " & Err.Description, vbExclamation
 End Sub
 
 Private Sub LogStatementPatient(patientName As String, dept As String, _
                                 dFrom As Date, dTo As Date, tInv As Double, _
-                                tPaid As Double, bDue As Double, pdfPath As String)
+                                tPaid As Double, cr As Double, bDue As Double, pdfPath As String)
     Dim wsL As Worksheet, r As Long, nextNo As Long, lastNo As String
     Set wsL = ThisWorkbook.Sheets("StatementLog")
     r = wsL.Cells(wsL.Rows.Count, "A").End(xlUp).row
@@ -700,7 +1006,7 @@ Private Sub LogStatementPatient(patientName As String, dept As String, _
     wsL.Cells(r, "G").Value = dTo:   wsL.Cells(r, "G").NumberFormat = "yyyy/mm/dd"
     wsL.Cells(r, "H").Value = tInv
     wsL.Cells(r, "I").Value = tPaid
-    wsL.Cells(r, "J").Value = 0
+    wsL.Cells(r, "J").Value = cr
     wsL.Cells(r, "K").Value = bDue
     wsL.Cells(r, "L").Value = pdfPath
 End Sub
@@ -717,7 +1023,7 @@ End Function
 
 Private Sub RenderPatientHeader(ws As Worksheet, patientName As String, _
                                 dFrom As Date, dTo As Date, dept As String)
-    Dim wsP As Worksheet, wsLog As Worksheet, last As Long, i As Long
+    Dim wsP As Worksheet, wsLog As Worksheet, wsMC As Worksheet, last As Long, i As Long
     Dim medAid As String, medNo As String
 
     ws.Range("A3").Value = DeptStmtTitle(dept)
@@ -754,6 +1060,21 @@ Private Sub RenderPatientHeader(ws As Worksheet, patientName As String, _
             medNo = CStr(wsLog.Cells(i, 21).Value)
         End If
     Next i
+    If medAid = "" And medNo = "" Then
+        On Error Resume Next
+        Set wsMC = ThisWorkbook.Sheets("MedAidLog")
+        On Error GoTo 0
+        If Not wsMC Is Nothing Then
+            last = wsMC.Cells(wsMC.Rows.Count, ML_NO).End(xlUp).row
+            For i = 2 To last
+                If NrmID(CStr(wsMC.Cells(i, ML_PATIENT).Value)) = NrmID(patientName) Then
+                    medAid = CStr(wsMC.Cells(i, ML_MEDAID).Value)
+                    medNo = CStr(wsMC.Cells(i, ML_MEDNO).Value)
+                    Exit For
+                End If
+            Next i
+        End If
+    End If
 
     ws.Range("F6").Value = "Medical Aid:"
     ws.Range("F7").Value = "Med Aid No:"
@@ -766,29 +1087,44 @@ End Sub
 Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo As Date, _
                                        dept As String, ByRef lastContentRow As Long, _
                                        ByRef outTotInv As Double, ByRef outTotPaid As Double, _
+                                       ByRef outCredit As Double, _
                                        ByRef outBalDue As Double) As Worksheet
-    Dim ws As Worksheet, wsLog As Worksheet, wsPay As Worksheet
-    Dim last As Long, i As Long, j As Long
-    Dim opening As Double
-    Dim rowsArr() As Long, dts() As Double, kinds() As String, cnt As Long
-    Dim tL As Long, tD As Double, tS As String
+    Dim ws As Worksheet, wsLog As Worksheet, wsPay As Worksheet, wsMC As Worksheet
+    Dim payIdx As Object, patientCreditIdx As Object, mcDocIdx As Object
+    Dim last As Long, lastMC As Long, lastP As Long, i As Long, j As Long
+    Dim opening As Double, storedCredit As Double
+    Dim rowsArr() As Long, dts() As Double, kinds() As String, undateds() As Boolean, cnt As Long
+    Dim tL As Long, tD As Double, tS As String, tB As Boolean
     Dim r As Long, running As Double
     Dim totalInv As Double, totalPaid As Double
     Dim ageCur As Double, age30 As Double, age60 As Double, age90 As Double
     Dim bal As Double, dueD As Date, days As Long
-    Dim invDate As Date, invTotal As Double, invBal As Double
-    Dim lastP As Long, pInv As String, pDate As Date, pAmt As Double, logRow As Long
+    Dim invDate As Date, invTotal As Double
+    Dim pInv As String, pAmt As Double, logRow As Long, mcRow As Long
+    Dim totalLines As Long, availRows As Long, needRows As Long, off As Long
+    Dim grossOut As Double, grossCheck As Double, balDue As Double, excl As Double, vat As Double
 
     Set ws = ResetStatementSheet()
     Set wsLog = ThisWorkbook.Sheets("InvoiceLog")
     Set wsPay = ThisWorkbook.Sheets("Payments")
+    On Error Resume Next
+    Set wsMC = ThisWorkbook.Sheets("MedAidLog")
+    On Error GoTo 0
+    Set payIdx = BuildPaymentsIndex(wsPay, dTo)
+    Set patientCreditIdx = BuildPatientCreditIndex()
+    storedCredit = PatientCreditFromIdx(patientCreditIdx, patientName)
+    If Not wsMC Is Nothing Then Set mcDocIdx = BuildRowIndex(wsMC, ML_NO)
 
     RenderPatientHeader ws, patientName, dFrom, dTo, dept
 
     last = wsLog.Cells(wsLog.Rows.Count, "A").End(xlUp).row
-    ReDim rowsArr(1 To (last + 50) * 2)
-    ReDim dts(1 To (last + 50) * 2)
-    ReDim kinds(1 To (last + 50) * 2)
+    lastP = wsPay.Cells(wsPay.Rows.Count, "A").End(xlUp).row
+    lastMC = 0
+    If Not wsMC Is Nothing Then lastMC = wsMC.Cells(wsMC.Rows.Count, ML_NO).End(xlUp).row
+    ReDim rowsArr(1 To last + lastP + lastMC + 10)
+    ReDim dts(1 To last + lastP + lastMC + 10)
+    ReDim kinds(1 To last + lastP + lastMC + 10)
+    ReDim undateds(1 To last + lastP + lastMC + 10)
     cnt = 0: opening = 0
 
     ' ---- invoices (patient + name match) ----
@@ -798,37 +1134,54 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
            And DeptMatch(CStr(wsLog.Cells(i, 1).Value), dept) Then
             invDate = CDate(wsLog.Cells(i, 4).Value)
             invTotal = Num(wsLog.Cells(i, 12).Value)
-            invBal = Num(wsLog.Cells(i, 15).Value)
             If invDate < dFrom Then
-                ' before range: carry OUTSTANDING BALANCE into opening, no line
-                opening = opening + invBal
+                opening = opening + LiveOutstanding(invTotal, payIdx, CStr(wsLog.Cells(i, 1).Value), dFrom - 1, True)
             ElseIf invDate <= dTo Then
-                ' in range: show as a ledger line
                 cnt = cnt + 1: rowsArr(cnt) = i: dts(cnt) = CDbl(invDate): kinds(cnt) = "INV"
             End If
         End If
     Next i
 
+    ' ---- med claims ----
+    If Not wsMC Is Nothing Then
+        For i = 2 To lastMC
+            If NrmID(CStr(wsMC.Cells(i, ML_PATIENT).Value)) = NrmID(patientName) _
+               And DeptMatch(CStr(wsMC.Cells(i, ML_NO).Value), dept) Then
+                invDate = CDate(wsMC.Cells(i, ML_DATE).Value)
+                invTotal = Num(wsMC.Cells(i, ML_TOTAL).Value)
+                If invDate < dFrom Then
+                    opening = opening + LiveOutstanding(invTotal, payIdx, CStr(wsMC.Cells(i, ML_NO).Value), dFrom - 1, True)
+                ElseIf invDate <= dTo Then
+                    cnt = cnt + 1: rowsArr(cnt) = i: dts(cnt) = CDbl(invDate): kinds(cnt) = "MC"
+                End If
+            End If
+        Next i
+    End If
+
     ' ---- payments ----
-    lastP = wsPay.Cells(wsPay.Rows.Count, "A").End(xlUp).row
     For i = 2 To lastP
         pInv = CStr(wsPay.Cells(i, 2).Value)
         logRow = FindLogRow(wsLog, pInv)
+        mcRow = 0
+        If logRow = 0 And Not mcDocIdx Is Nothing Then
+            If mcDocIdx.Exists(NrmID(pInv)) Then mcRow = CLng(mcDocIdx(NrmID(pInv)))
+        End If
         If logRow > 0 Then
             If LCase(Trim(CStr(wsLog.Cells(logRow, 3).Value))) = "patient" _
                And NrmID(CStr(wsLog.Cells(logRow, 7).Value)) = NrmID(patientName) _
                And DeptMatch(pInv, dept) Then
-                pDate = CDate(wsPay.Cells(i, 3).Value)
-                pAmt = Num(wsPay.Cells(i, 4).Value)
-                ' opening already net of ALL payments; show only IN-RANGE payments as lines
-                If pDate >= dFrom And pDate <= dTo Then
-                    cnt = cnt + 1: rowsArr(cnt) = i: dts(cnt) = CDbl(pDate): kinds(cnt) = "PAY"
-                End If
+                QueuePaymentEntry wsPay, i, dFrom, dTo, cnt, rowsArr, dts, kinds, undateds
+            End If
+        ElseIf mcRow > 0 Then
+            If NrmID(CStr(wsMC.Cells(mcRow, ML_PATIENT).Value)) = NrmID(patientName) _
+               And DeptMatch(pInv, dept) Then
+                QueuePaymentEntry wsPay, i, dFrom, dTo, cnt, rowsArr, dts, kinds, undateds
             End If
         End If
     Next i
 
-    If cnt = 0 And Abs(opening) < 0.005 Then
+    ' Keep credit-only accounts renderable: only exit when both opening and stored credit are zero.
+    If cnt = 0 And Abs(opening) < 0.005 And Abs(storedCredit) < 0.005 Then
         lastContentRow = 0: Set BuildAndRenderPatient = ws: Exit Function
     End If
 
@@ -839,23 +1192,23 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
                 tD = dts(j): dts(j) = dts(j + 1): dts(j + 1) = tD
                 tL = rowsArr(j): rowsArr(j) = rowsArr(j + 1): rowsArr(j + 1) = tL
                 tS = kinds(j): kinds(j) = kinds(j + 1): kinds(j + 1) = tS
+                tB = undateds(j): undateds(j) = undateds(j + 1): undateds(j + 1) = tB
             End If
         Next j
     Next i
 
     ' ==== shift totals block down ====
-    Dim totalLines As Long, availRows As Long, needRows As Long, off As Long
     totalLines = 1 + cnt
-    availRows = 19 - 13
-    needRows = totalLines + 1 - availRows
+    availRows = TOTALS_ORIG_ROW - FIRST_LINE_ROW
+    needRows = totalLines + GAP_ROWS - availRows
     off = 0
     If needRows > 0 Then
-        ws.Rows(19 & ":" & (19 + needRows - 1)).Insert Shift:=xlDown
+        ws.Rows(TOTALS_ORIG_ROW & ":" & (TOTALS_ORIG_ROW + needRows - 1)).Insert Shift:=xlDown
         off = needRows
     End If
 
     ' ---- opening line ----
-    r = 13
+    r = FIRST_LINE_ROW
     running = opening
     ws.Cells(r, 1).Value = Format(dFrom, "dd/mm/yyyy")
     ws.Cells(r, 3).Value = "Balance Brought Forward"
@@ -865,26 +1218,45 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
     ' ---- ledger lines ----
     totalInv = 0: totalPaid = 0
     For i = 1 To cnt
-        If kinds(i) = "INV" Then
-            invTotal = Num(wsLog.Cells(rowsArr(i), 12).Value)
-            running = running + invTotal
-            totalInv = totalInv + invTotal
-            ws.Cells(r, 1).Value = Format(CDate(wsLog.Cells(rowsArr(i), 4).Value), "dd/mm/yyyy")
-            ws.Cells(r, 2).Value = wsLog.Cells(rowsArr(i), 1).Value
-            ws.Cells(r, 3).Value = wsLog.Cells(rowsArr(i), 7).Value
-            ws.Cells(r, 4).Value = wsLog.Cells(rowsArr(i), 8).Value
-            ws.Cells(r, 5).Value = invTotal
-            ws.Cells(r, 8).Value = running
-        Else
-            pAmt = Num(wsPay.Cells(rowsArr(i), 4).Value)
-            running = running - pAmt
-            totalPaid = totalPaid + pAmt
-            ws.Cells(r, 1).Value = Format(CDate(wsPay.Cells(rowsArr(i), 3).Value), "dd/mm/yyyy")
-            ws.Cells(r, 2).Value = wsPay.Cells(rowsArr(i), 1).Value
-            ws.Cells(r, 3).Value = "Payment - " & wsPay.Cells(rowsArr(i), 2).Value
-            ws.Cells(r, 6).Value = pAmt
-            ws.Cells(r, 8).Value = running
-        End If
+        Select Case kinds(i)
+            Case "INV"
+                invTotal = Num(wsLog.Cells(rowsArr(i), 12).Value)
+                running = running + invTotal
+                totalInv = totalInv + invTotal
+                ws.Cells(r, 1).Value = Format(CDate(wsLog.Cells(rowsArr(i), 4).Value), "dd/mm/yyyy")
+                ws.Cells(r, 2).Value = wsLog.Cells(rowsArr(i), 1).Value
+                ws.Cells(r, 3).Value = wsLog.Cells(rowsArr(i), 7).Value
+                ws.Cells(r, 4).Value = wsLog.Cells(rowsArr(i), 8).Value
+                ws.Cells(r, 5).Value = invTotal
+                ws.Cells(r, 8).Value = running
+            Case "MC"
+                invTotal = Num(wsMC.Cells(rowsArr(i), ML_TOTAL).Value)
+                running = running + invTotal
+                totalInv = totalInv + invTotal
+                ws.Cells(r, 1).Value = Format(CDate(wsMC.Cells(rowsArr(i), ML_DATE).Value), "dd/mm/yyyy")
+                ws.Cells(r, 2).Value = wsMC.Cells(rowsArr(i), ML_NO).Value
+                ws.Cells(r, 3).Value = wsMC.Cells(rowsArr(i), ML_PATIENT).Value
+                If Trim(CStr(wsMC.Cells(rowsArr(i), ML_APPLIANCE).Value)) <> "" Then
+                    ws.Cells(r, 4).Value = "Med Claim - " & wsMC.Cells(rowsArr(i), ML_APPLIANCE).Value
+                Else
+                    ws.Cells(r, 4).Value = "Med Claim"
+                End If
+                ws.Cells(r, 5).Value = invTotal
+                ws.Cells(r, 8).Value = running
+            Case Else
+                pAmt = Num(wsPay.Cells(rowsArr(i), 4).Value)
+                running = running - pAmt
+                totalPaid = totalPaid + pAmt
+                If undateds(i) Then
+                    ws.Cells(r, 1).Value = ""
+                Else
+                    ws.Cells(r, 1).Value = Format(CDate(wsPay.Cells(rowsArr(i), 3).Value), "dd/mm/yyyy")
+                End If
+                ws.Cells(r, 2).Value = wsPay.Cells(rowsArr(i), 1).Value
+                ws.Cells(r, 3).Value = PaymentLineLabel(wsPay, rowsArr(i), undateds(i))
+                ws.Cells(r, 6).Value = pAmt
+                ws.Cells(r, 8).Value = running
+        End Select
         r = r + 1
     Next i
 
@@ -894,7 +1266,7 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
         If LCase(Trim(CStr(wsLog.Cells(i, 3).Value))) = "patient" _
            And NrmID(CStr(wsLog.Cells(i, 7).Value)) = NrmID(patientName) _
            And DeptMatch(CStr(wsLog.Cells(i, 1).Value), dept) Then
-            bal = Num(wsLog.Cells(i, 15).Value)
+            bal = LiveOutstanding(Num(wsLog.Cells(i, 12).Value), payIdx, CStr(wsLog.Cells(i, 1).Value), dTo)
             If bal > 0.005 Then
                 If IsDate(wsLog.Cells(i, 5).Value) Then
                     dueD = CDate(wsLog.Cells(i, 5).Value)
@@ -914,21 +1286,53 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
             End If
         End If
     Next i
+    If Not wsMC Is Nothing Then
+        For i = 2 To lastMC
+            If NrmID(CStr(wsMC.Cells(i, ML_PATIENT).Value)) = NrmID(patientName) _
+               And DeptMatch(CStr(wsMC.Cells(i, ML_NO).Value), dept) Then
+                bal = LiveOutstanding(Num(wsMC.Cells(i, ML_TOTAL).Value), payIdx, CStr(wsMC.Cells(i, ML_NO).Value), dTo)
+                If bal > 0.005 Then
+                    If IsDate(wsMC.Cells(i, ML_DUE).Value) Then
+                        dueD = CDate(wsMC.Cells(i, ML_DUE).Value)
+                    Else
+                        dueD = CDate(wsMC.Cells(i, ML_DATE).Value)
+                    End If
+                    days = CLng(dTo - dueD)
+                    If days <= 0 Then
+                        ageCur = ageCur + bal
+                    ElseIf days <= 30 Then
+                        age30 = age30 + bal
+                    ElseIf days <= 60 Then
+                        age60 = age60 + bal
+                    Else
+                        age90 = age90 + bal
+                    End If
+                End If
+            End If
+        Next i
+    End If
 
-    ' ---- totals (credit = 0) ----
-    Dim grossOut As Double, balDue As Double, excl As Double, vat As Double
-    Const VATR As Double = 0.15
-    grossOut = running: If grossOut < 0 Then grossOut = 0
-    balDue = Round(grossOut, 2): If balDue < 0 Then balDue = 0
-    excl = Round(balDue / (1 + VATR), 2)
-    vat = Round(balDue - excl, 2)
+    ' ---- totals ----
     totalInv = Round(totalInv, 2): totalPaid = Round(totalPaid, 2)
     ageCur = Round(ageCur, 2): age30 = Round(age30, 2)
     age60 = Round(age60, 2): age90 = Round(age90, 2)
+    storedCredit = Round(storedCredit, 2)
+    grossCheck = Round(running, 2)
+    grossOut = Round(ageCur + age30 + age60 + age90, 2)
+    balDue = Round(grossOut - storedCredit, 2)
+    CheckAgingReconciliation patientName, dFrom, dTo, ageCur, age30, age60, age90, grossCheck
+    If balDue >= 0 Then
+        excl = Round(balDue / (1 + VAT_RATE), 2)
+        vat = Round(balDue - excl, 2)
+    Else
+        ' Show statement credit entirely as VAT-exclusive; never present negative output VAT.
+        excl = balDue
+        vat = 0
+    End If
 
     ws.Range("H" & (19 + off)).Value = totalInv
     ws.Range("H" & (20 + off)).Value = totalPaid
-    ws.Range("H" & (21 + off)).Value = 0
+    ws.Range("H" & (21 + off)).Value = storedCredit
     ws.Range("H" & (22 + off)).Value = excl
     ws.Range("H" & (23 + off)).Value = vat
     ws.Range("H" & (24 + off)).Value = balDue
@@ -940,8 +1344,8 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
 
     FormatStatementP ws, r - 1
 
-    outTotInv = totalInv: outTotPaid = totalPaid: outBalDue = balDue
-    lastContentRow = 36 + off
+    outTotInv = totalInv: outTotPaid = totalPaid: outCredit = storedCredit: outBalDue = balDue
+    lastContentRow = FOOTER_LAST_ROW + off
     PaginateStatementP ws, lastContentRow
     Set BuildAndRenderPatient = ws
 End Function
@@ -979,4 +1383,3 @@ Private Function DeptStmtTitle(dept As String) As String
         Case Else: DeptStmtTitle = tWA & " / " & tWD & " Statement"
     End Select
 End Function
-
