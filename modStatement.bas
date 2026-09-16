@@ -666,6 +666,18 @@ Private Function FindLogRow(wsLog As Worksheet, invNo As String) As Long
     Next i
 End Function
 
+Private Function BuildRowIndex(ws As Worksheet, keyCol As Long) As Object
+    Dim idx As Object, last As Long, i As Long, key As String
+
+    Set idx = CreateObject("Scripting.Dictionary")
+    last = ws.Cells(ws.Rows.Count, keyCol).End(xlUp).row
+    For i = 2 To last
+        key = NrmID(CStr(ws.Cells(i, keyCol).Value))
+        If key <> "" Then idx(key) = i
+    Next i
+    Set BuildRowIndex = idx
+End Function
+
 Private Function DeptMatch(invNo As String, dept As String) As Boolean
     If UCase(dept) = "ALL" Or dept = "" Then DeptMatch = True: Exit Function
     DeptMatch = (InStr(1, UCase(invNo), UCase(dept)) > 0)
@@ -788,7 +800,9 @@ Private Function BuildPatientCreditIndex() As Object
     If keyCol = 0 Then keyCol = 1
     If nameCol = 0 Then nameCol = 2
 
-    last = wsP.Cells(wsP.Rows.Count, "A").End(xlUp).row
+    last = wsP.Cells(wsP.Rows.Count, keyCol).End(xlUp).row
+    If wsP.Cells(wsP.Rows.Count, nameCol).End(xlUp).row > last Then last = wsP.Cells(wsP.Rows.Count, nameCol).End(xlUp).row
+    If wsP.Cells(wsP.Rows.Count, creditCol).End(xlUp).row > last Then last = wsP.Cells(wsP.Rows.Count, creditCol).End(xlUp).row
     For i = 2 To last
         keyVal = NrmID(CStr(wsP.Cells(i, keyCol).Value))
         nameVal = NrmID(CStr(wsP.Cells(i, nameCol).Value))
@@ -1037,8 +1051,7 @@ Private Sub RenderPatientHeader(ws As Worksheet, patientName As String, _
     If Not wsP Is Nothing Then
         last = wsP.Cells(wsP.Rows.Count, "A").End(xlUp).row
         For i = 2 To last
-            If NrmID(CStr(wsP.Cells(i, "A").Value)) = NrmID(patientName) _
-               Or NrmID(CStr(wsP.Cells(i, "B").Value)) = NrmID(patientName) Then
+            If NrmID(CStr(wsP.Cells(i, "A").Value)) = NrmID(patientName) Then
                 ws.Range("B6").Value = wsP.Cells(i, "B").Value
                 ws.Range("B8").Value = wsP.Cells(i, "C").Value
                 ws.Range("B9").Value = wsP.Cells(i, "D").Value
@@ -1089,7 +1102,7 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
                                        ByRef outCredit As Double, _
                                        ByRef outBalDue As Double) As Worksheet
     Dim ws As Worksheet, wsLog As Worksheet, wsPay As Worksheet, wsMC As Worksheet
-    Dim payIdx As Object, patientCreditIdx As Object
+    Dim payIdx As Object, patientCreditIdx As Object, mcDocIdx As Object
     Dim last As Long, lastMC As Long, lastP As Long, i As Long, j As Long
     Dim opening As Double, storedCredit As Double
     Dim rowsArr() As Long, dts() As Double, kinds() As String, undateds() As Boolean, cnt As Long
@@ -1112,6 +1125,7 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
     Set payIdx = BuildPaymentsIndex(wsPay, dTo)
     Set patientCreditIdx = BuildPatientCreditIndex()
     storedCredit = PatientCreditFromIdx(patientCreditIdx, patientName)
+    If Not wsMC Is Nothing Then Set mcDocIdx = BuildRowIndex(wsMC, ML_NO)
 
     RenderPatientHeader ws, patientName, dFrom, dTo, dept
 
@@ -1161,7 +1175,9 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
         pInv = CStr(wsPay.Cells(i, 2).Value)
         logRow = FindLogRow(wsLog, pInv)
         mcRow = 0
-        If logRow = 0 And Not wsMC Is Nothing Then mcRow = FindMCRow(wsMC, pInv)
+        If logRow = 0 And Not mcDocIdx Is Nothing Then
+            If mcDocIdx.Exists(NrmID(pInv)) Then mcRow = CLng(mcDocIdx(NrmID(pInv)))
+        End If
         If logRow > 0 Then
             If LCase(Trim(CStr(wsLog.Cells(logRow, 3).Value))) = "patient" _
                And NrmID(CStr(wsLog.Cells(logRow, 7).Value)) = NrmID(patientName) _
