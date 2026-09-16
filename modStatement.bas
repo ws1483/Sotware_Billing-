@@ -1054,7 +1054,7 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
     Dim rowsArr() As Long, dts() As Double, kinds() As String, undateds() As Boolean, cnt As Long
     Dim tL As Long, tD As Double, tS As String, tB As Boolean
     Dim r As Long, running As Double
-    Dim totalInv As Double, totalPaid As Double, openingMedInv As Double
+    Dim totalInv As Double, totalPaid As Double
     Dim ageCur As Double, age30 As Double, age60 As Double, age90 As Double
     Dim bal As Double, dueD As Date, days As Long
     Dim invDate As Date, invTotal As Double
@@ -1081,7 +1081,7 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
     ReDim dts(1 To last + lastP + lastMC + 10)
     ReDim kinds(1 To last + lastP + lastMC + 10)
     ReDim undateds(1 To last + lastP + lastMC + 10)
-    cnt = 0: opening = 0: openingMedInv = 0
+    cnt = 0: opening = 0
 
     ' ---- invoices (patient + name match) ----
     For i = 2 To last
@@ -1106,9 +1106,7 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
                 invDate = CDate(wsMC.Cells(i, ML_DATE).Value)
                 invTotal = Num(wsMC.Cells(i, ML_TOTAL).Value)
                 If invDate < dFrom Then
-                    bal = LiveOutstanding(invTotal, payIdx, CStr(wsMC.Cells(i, ML_NO).Value), dFrom - 1, True)
-                    opening = opening + bal
-                    openingMedInv = openingMedInv + bal
+                    opening = opening + LiveOutstanding(invTotal, payIdx, CStr(wsMC.Cells(i, ML_NO).Value), dFrom - 1, True)
                 ElseIf invDate <= dTo Then
                     cnt = cnt + 1: rowsArr(cnt) = i: dts(cnt) = CDbl(invDate): kinds(cnt) = "MC"
                 End If
@@ -1268,7 +1266,6 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
     End If
 
     ' ---- totals ----
-    totalInv = totalInv + openingMedInv
     totalInv = Round(totalInv, 2): totalPaid = Round(totalPaid, 2)
     ageCur = Round(ageCur, 2): age30 = Round(age30, 2)
     age60 = Round(age60, 2): age90 = Round(age90, 2)
