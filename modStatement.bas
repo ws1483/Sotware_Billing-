@@ -985,8 +985,68 @@ End Function
 
 ' ============================ RECON AUDIT ====================================
 Public Sub AuditRecon_DrPDFerreira()
+    Dim dept As String
+    Dim agingTotal As Double, grossBeforeCredit As Double
+    Dim payGroupA As Double, payGroupB As Double
+    Dim diff As Double
+
+    dept = UCase(Trim(InputBox("Dept for reconciliation (WA/WD/ALL):", "Statement Reconciliation Audit", "ALL")))
+    If dept = "" Then Exit Sub
+    If dept <> "WA" And dept <> "WD" And dept <> "ALL" Then
+        MsgBox "Please enter WA, WD, or ALL.", vbExclamation
+        Exit Sub
+    End If
+
+    diff = AuditRecon_DrPDFerreira_Core(dept, "StmtReconAudit", True, _
+                                        agingTotal, grossBeforeCredit, payGroupA, payGroupB)
+End Sub
+
+Public Sub AuditRecon_DrPDFerreira_BothDepts()
+    Const TARGET_DIFF As Double = 2588.8
+    Dim wsSum As Worksheet
+    Dim agingWA As Double, grossWA As Double, aWA As Double, bWA As Double, diffWA As Double
+    Dim agingWD As Double, grossWD As Double, aWD As Double, bWD As Double, diffWD As Double
+
+    diffWA = AuditRecon_DrPDFerreira_Core("WA", "StmtReconAudit_WA", False, agingWA, grossWA, aWA, bWA)
+    diffWD = AuditRecon_DrPDFerreira_Core("WD", "StmtReconAudit_WD", False, agingWD, grossWD, aWD, bWD)
+
+    Set wsSum = EnsureReconAuditSheet("StmtReconAudit_Summary")
+    wsSum.Range("A1").Value = "Statement Reconciliation Summary (Dr PD Ferreira)"
+    wsSum.Range("A2").Resize(1, 8).Value = Array("Dept", "Aging", "GrossBeforeCredit", "Difference", "GroupA_PRE", "GroupB_IN", "Matches 2588.80?", "DeltaTo2588.80")
+
+    wsSum.Range("A3").Value = "WA"
+    wsSum.Range("B3").Value = agingWA
+    wsSum.Range("C3").Value = grossWA
+    wsSum.Range("D3").Value = diffWA
+    wsSum.Range("E3").Value = aWA
+    wsSum.Range("F3").Value = bWA
+    wsSum.Range("G3").Value = IIf(Abs(diffWA - TARGET_DIFF) < 0.01, "YES", "NO")
+    wsSum.Range("H3").Value = Round(diffWA - TARGET_DIFF, 2)
+
+    wsSum.Range("A4").Value = "WD"
+    wsSum.Range("B4").Value = agingWD
+    wsSum.Range("C4").Value = grossWD
+    wsSum.Range("D4").Value = diffWD
+    wsSum.Range("E4").Value = aWD
+    wsSum.Range("F4").Value = bWD
+    wsSum.Range("G4").Value = IIf(Abs(diffWD - TARGET_DIFF) < 0.01, "YES", "NO")
+    wsSum.Range("H4").Value = Round(diffWD - TARGET_DIFF, 2)
+
+    wsSum.Range("B3:F4").NumberFormat = "R #,##0.00"
+    wsSum.Range("H3:H4").NumberFormat = "R #,##0.00"
+    wsSum.Range("G3:G4").NumberFormat = "@"
+    wsSum.Columns("A:H").AutoFit
+    wsSum.Activate
+    wsSum.Range("A1").Select
+
+    MsgBox "Done. Open StmtReconAudit_Summary, StmtReconAudit_WA, and StmtReconAudit_WD.", vbInformation
+End Sub
+
+Private Function AuditRecon_DrPDFerreira_Core(dept As String, outSheetName As String, showDoneMsg As Boolean, _
+                                               ByRef outAging As Double, ByRef outGross As Double, _
+                                               ByRef outGroupA As Double, ByRef outGroupB As Double) As Double
     Const DR_NAME As String = "DR PD Ferreira"
-    Dim dFrom As Date, dTo As Date, dept As String, custID As String
+    Dim dFrom As Date, dTo As Date, custID As String
     Dim wsLog As Worksheet, wsPay As Worksheet, wsOut As Worksheet
     Dim lastLog As Long, lastPay As Long, i As Long, outRow As Long
     Dim invNo As String, invDate As Date, invTotal As Double, invBal As Double
@@ -1001,22 +1061,21 @@ Public Sub AuditRecon_DrPDFerreira()
 
     dFrom = DateSerial(2026, 9, 22)
     dTo = DateSerial(2026, 10, 6)
-    dept = UCase(Trim(InputBox("Dept for reconciliation (WA/WD/ALL):", "Statement Reconciliation Audit", "ALL")))
-    If dept = "" Then Exit Sub
+    dept = UCase(Trim(dept))
     If dept <> "WA" And dept <> "WD" And dept <> "ALL" Then
-        MsgBox "Please enter WA, WD, or ALL.", vbExclamation
-        Exit Sub
+        MsgBox "Invalid dept '" & dept & "' (expected WA/WD/ALL).", vbExclamation
+        Exit Function
     End If
 
     custID = DrNameToCustIDp(DR_NAME)
     If custID = "" Then
         MsgBox "Doctor not found in Customers: " & DR_NAME, vbExclamation
-        Exit Sub
+        Exit Function
     End If
 
     Set wsLog = ThisWorkbook.Sheets("InvoiceLog")
     Set wsPay = ThisWorkbook.Sheets("Payments")
-    Set wsOut = EnsureReconAuditSheet("StmtReconAudit")
+    Set wsOut = EnsureReconAuditSheet(outSheetName)
     Set dictInvDup = CreateObject("Scripting.Dictionary")
     Set dictPayDup = CreateObject("Scripting.Dictionary")
 
@@ -1185,12 +1244,20 @@ Public Sub AuditRecon_DrPDFerreira()
 
     wsOut.Columns("A:K").AutoFit
     wsOut.Range("C:C,F:F").NumberFormat = "yyyy-mm-dd"
-    wsOut.Range("D:E,H:H,J:J").NumberFormat = "R #,##0.00"
+    wsOut.Range("D:E,H:H").NumberFormat = "R #,##0.00"
     wsOut.Activate
     wsOut.Range("A1").Select
 
-    MsgBox "Reconciliation audit complete on sheet 'StmtReconAudit'.", vbInformation
-End Sub
+    outAging = Round(agingTotal, 2)
+    outGross = grossDateOnly
+    outGroupA = Round(payGroupA, 2)
+    outGroupB = Round(payGroupB, 2)
+    AuditRecon_DrPDFerreira_Core = Round(outAging - outGross, 2)
+
+    If showDoneMsg Then
+        MsgBox "Reconciliation audit complete on sheet '" & outSheetName & "'.", vbInformation
+    End If
+End Function
 
 Private Function EnsureReconAuditSheet(sheetName As String) As Worksheet
     Dim ws As Worksheet
