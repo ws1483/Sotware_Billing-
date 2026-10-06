@@ -985,11 +985,15 @@ End Function
 
 ' ============================ RECON AUDIT ====================================
 Public Sub AuditRecon_DrPDFerreira()
+    Const DR_NAME As String = "DR PD Ferreira"
     Dim dept As String
+    Dim dFrom As Date, dTo As Date
     Dim agingTotal As Double, grossBeforeCredit As Double
     Dim payGroupA As Double, payGroupB As Double
     Dim diff As Double
 
+    dFrom = DateSerial(2026, 9, 22)
+    dTo = DateSerial(2026, 10, 6)
     dept = UCase(Trim(InputBox("Dept for reconciliation (WA/WD/ALL):", "Statement Reconciliation Audit", "ALL")))
     If dept = "" Then Exit Sub
     If dept <> "WA" And dept <> "WD" And dept <> "ALL" Then
@@ -997,18 +1001,22 @@ Public Sub AuditRecon_DrPDFerreira()
         Exit Sub
     End If
 
-    diff = AuditRecon_DrPDFerreira_Core(dept, "StmtReconAudit", True, _
+    diff = AuditRecon_Core(DR_NAME, dFrom, dTo, dept, "StmtReconAudit", True, _
                                         agingTotal, grossBeforeCredit, payGroupA, payGroupB)
 End Sub
 
 Public Sub AuditRecon_DrPDFerreira_BothDepts()
+    Const DR_NAME As String = "DR PD Ferreira"
     Const TARGET_DIFF As Double = 2588.8
+    Dim dFrom As Date, dTo As Date
     Dim wsSum As Worksheet
     Dim agingWA As Double, grossWA As Double, aWA As Double, bWA As Double, diffWA As Double
     Dim agingWD As Double, grossWD As Double, aWD As Double, bWD As Double, diffWD As Double
 
-    diffWA = AuditRecon_DrPDFerreira_Core("WA", "StmtReconAudit_WA", False, agingWA, grossWA, aWA, bWA)
-    diffWD = AuditRecon_DrPDFerreira_Core("WD", "StmtReconAudit_WD", False, agingWD, grossWD, aWD, bWD)
+    dFrom = DateSerial(2026, 9, 22)
+    dTo = DateSerial(2026, 10, 6)
+    diffWA = AuditRecon_Core(DR_NAME, dFrom, dTo, "WA", "StmtReconAudit_WA", False, agingWA, grossWA, aWA, bWA)
+    diffWD = AuditRecon_Core(DR_NAME, dFrom, dTo, "WD", "StmtReconAudit_WD", False, agingWD, grossWD, aWD, bWD)
 
     Set wsSum = EnsureReconAuditSheet("StmtReconAudit_Summary")
     wsSum.Range("A1").Value = "Statement Reconciliation Summary (Dr PD Ferreira)"
@@ -1042,11 +1050,54 @@ Public Sub AuditRecon_DrPDFerreira_BothDepts()
     MsgBox "Done. Open StmtReconAudit_Summary, StmtReconAudit_WA, and StmtReconAudit_WD.", vbInformation
 End Sub
 
-Private Function AuditRecon_DrPDFerreira_Core(dept As String, outSheetName As String, showDoneMsg As Boolean, _
-                                               ByRef outAging As Double, ByRef outGross As Double, _
-                                               ByRef outGroupA As Double, ByRef outGroupB As Double) As Double
-    Const DR_NAME As String = "DR PD Ferreira"
-    Dim dFrom As Date, dTo As Date, custID As String
+Public Sub AuditRecon_CustomFilters()
+    Dim drName As String, dept As String, outSheet As String
+    Dim fromText As String, toText As String
+    Dim dFrom As Date, dTo As Date
+    Dim agingTotal As Double, grossBeforeCredit As Double
+    Dim payGroupA As Double, payGroupB As Double
+    Dim diff As Double
+
+    drName = Trim(InputBox("Doctor name (exact Customers column B) or ALL:", "Custom Statement Reconciliation Audit", "ALL"))
+    If drName = "" Then Exit Sub
+
+    fromText = Trim(InputBox("From date (yyyy-mm-dd):", "Custom Statement Reconciliation Audit", Format(DateSerial(Year(Date), Month(Date), 1), "yyyy-mm-dd")))
+    If fromText = "" Then Exit Sub
+    If Not ParseAuditDate(fromText, dFrom) Then
+        MsgBox "Invalid From date. Use yyyy-mm-dd.", vbExclamation
+        Exit Sub
+    End If
+
+    toText = Trim(InputBox("To date (yyyy-mm-dd):", "Custom Statement Reconciliation Audit", Format(Date, "yyyy-mm-dd")))
+    If toText = "" Then Exit Sub
+    If Not ParseAuditDate(toText, dTo) Then
+        MsgBox "Invalid To date. Use yyyy-mm-dd.", vbExclamation
+        Exit Sub
+    End If
+    If dTo < dFrom Then
+        MsgBox "To date must be on or after From date.", vbExclamation
+        Exit Sub
+    End If
+
+    dept = UCase(Trim(InputBox("Dept (WA/WD/ALL):", "Custom Statement Reconciliation Audit", "ALL")))
+    If dept = "" Then Exit Sub
+    If dept <> "WA" And dept <> "WD" And dept <> "ALL" Then
+        MsgBox "Please enter WA, WD, or ALL.", vbExclamation
+        Exit Sub
+    End If
+
+    outSheet = Trim(InputBox("Output sheet name:", "Custom Statement Reconciliation Audit", "StmtReconAudit_Custom"))
+    If outSheet = "" Then outSheet = "StmtReconAudit_Custom"
+
+    diff = AuditRecon_Core(drName, dFrom, dTo, dept, outSheet, True, _
+                           agingTotal, grossBeforeCredit, payGroupA, payGroupB)
+End Sub
+
+Private Function AuditRecon_Core(drName As String, dFrom As Date, dTo As Date, _
+                                 dept As String, outSheetName As String, showDoneMsg As Boolean, _
+                                 ByRef outAging As Double, ByRef outGross As Double, _
+                                 ByRef outGroupA As Double, ByRef outGroupB As Double) As Double
+    Dim custID As String, allDoctors As Boolean
     Dim wsLog As Worksheet, wsPay As Worksheet, wsOut As Worksheet
     Dim lastLog As Long, lastPay As Long, i As Long, outRow As Long
     Dim invNo As String, invDate As Date, invTotal As Double, invBal As Double
@@ -1059,18 +1110,22 @@ Private Function AuditRecon_DrPDFerreira_Core(dept As String, outSheetName As St
     Dim okInvDate As Boolean, okPayDate As Boolean
     Dim dupInvRow As Long, dupPayRow As Long
 
-    dFrom = DateSerial(2026, 9, 22)
-    dTo = DateSerial(2026, 10, 6)
     dept = UCase(Trim(dept))
     If dept <> "WA" And dept <> "WD" And dept <> "ALL" Then
         MsgBox "Invalid dept '" & dept & "' (expected WA/WD/ALL).", vbExclamation
         Exit Function
     End If
 
-    custID = DrNameToCustIDp(DR_NAME)
-    If custID = "" Then
-        MsgBox "Doctor not found in Customers: " & DR_NAME, vbExclamation
-        Exit Function
+    allDoctors = (UCase(Trim(drName)) = "ALL")
+    If allDoctors Then
+        custID = "ALL"
+        drName = "ALL DOCTORS"
+    Else
+        custID = DrNameToCustIDp(drName)
+        If custID = "" Then
+            MsgBox "Doctor not found in Customers: " & drName, vbExclamation
+            Exit Function
+        End If
     End If
 
     Set wsLog = ThisWorkbook.Sheets("InvoiceLog")
@@ -1080,7 +1135,7 @@ Private Function AuditRecon_DrPDFerreira_Core(dept As String, outSheetName As St
     Set dictPayDup = CreateObject("Scripting.Dictionary")
 
     wsOut.Range("A1").Value = "Statement Reconciliation Drill-down"
-    wsOut.Range("A2").Value = "Doctor": wsOut.Range("B2").Value = DR_NAME
+    wsOut.Range("A2").Value = "Doctor": wsOut.Range("B2").Value = drName
     wsOut.Range("C2").Value = "CustID": wsOut.Range("D2").Value = custID
     wsOut.Range("E2").Value = "Dept": wsOut.Range("F2").Value = dept
     wsOut.Range("A3").Value = "From": wsOut.Range("B3").Value = dFrom
@@ -1093,7 +1148,7 @@ Private Function AuditRecon_DrPDFerreira_Core(dept As String, outSheetName As St
 
     lastLog = wsLog.Cells(wsLog.Rows.Count, "A").End(xlUp).row
     For i = 2 To lastLog
-        If NrmID(CStr(wsLog.Cells(i, 6).Value)) = NrmID(custID) _
+        If (allDoctors Or NrmID(CStr(wsLog.Cells(i, 6).Value)) = NrmID(custID)) _
            And UCase(CStr(wsLog.Cells(i, 3).Value)) = "DOCTOR" _
            And DeptMatch(CStr(wsLog.Cells(i, 1).Value), dept) Then
 
@@ -1143,7 +1198,7 @@ Private Function AuditRecon_DrPDFerreira_Core(dept As String, outSheetName As St
     Next i
 
     outRow = outRow + 1
-    wsOut.Cells(outRow, 1).Resize(1, 11).Value = Array("PayRow", "InvoiceNo", "PaymentDate", "Amount", "LogRow", "LinkedInvoiceDate", "BelongsDoctor?", "DeptMatch?", "PayDateInRange?", "LinkedInvPreRange?", "Group")
+    wsOut.Cells(outRow, 1).Resize(1, 11).Value = Array("PayRow", "InvoiceNo", "PaymentDate", "Amount", "LogRow", "LinkedInvoiceDate", "BelongsFilterDoctor?", "DeptMatch?", "PayDateInRange?", "LinkedInvPreRange?", "Group")
     outRow = outRow + 1
 
     lastPay = wsPay.Cells(wsPay.Rows.Count, "A").End(xlUp).row
@@ -1166,11 +1221,11 @@ Private Function AuditRecon_DrPDFerreira_Core(dept As String, outSheetName As St
             If logRow > 0 Then
                 linkedInvDate = CDate(wsLog.Cells(logRow, 4).Value)
                 wsOut.Cells(outRow, 6).Value = linkedInvDate
-                wsOut.Cells(outRow, 7).Value = IIf(NrmID(CStr(wsLog.Cells(logRow, 6).Value)) = NrmID(custID) And UCase(CStr(wsLog.Cells(logRow, 3).Value)) = "DOCTOR", "Y", "N")
+                wsOut.Cells(outRow, 7).Value = IIf(UCase(CStr(wsLog.Cells(logRow, 3).Value)) = "DOCTOR" And (allDoctors Or NrmID(CStr(wsLog.Cells(logRow, 6).Value)) = NrmID(custID)), "Y", "N")
                 wsOut.Cells(outRow, 8).Value = IIf(DeptMatch(pInv, dept), "Y", "N")
                 wsOut.Cells(outRow, 10).Value = IIf(linkedInvDate < dFrom, "Y", "N")
 
-                If NrmID(CStr(wsLog.Cells(logRow, 6).Value)) = NrmID(custID) _
+                If (allDoctors Or NrmID(CStr(wsLog.Cells(logRow, 6).Value)) = NrmID(custID)) _
                    And UCase(CStr(wsLog.Cells(logRow, 3).Value)) = "DOCTOR" _
                    And DeptMatch(pInv, dept) Then
 
@@ -1252,11 +1307,32 @@ Private Function AuditRecon_DrPDFerreira_Core(dept As String, outSheetName As St
     outGross = grossDateOnly
     outGroupA = Round(payGroupA, 2)
     outGroupB = Round(payGroupB, 2)
-    AuditRecon_DrPDFerreira_Core = Round(outAging - outGross, 2)
+    AuditRecon_Core = Round(outAging - outGross, 2)
 
     If showDoneMsg Then
         MsgBox "Reconciliation audit complete on sheet '" & outSheetName & "'.", vbInformation
     End If
+End Function
+
+Private Function ParseAuditDate(dtText As String, ByRef outDate As Date) As Boolean
+    Dim p() As String
+    On Error GoTo Bad
+    dtText = Trim(dtText)
+    If InStr(1, dtText, "-", vbBinaryCompare) > 0 Then
+        p = Split(dtText, "-")
+        If UBound(p) = 2 Then
+            outDate = DateSerial(CInt(p(0)), CInt(p(1)), CInt(p(2)))
+            ParseAuditDate = True
+            Exit Function
+        End If
+    End If
+    If IsDate(dtText) Then
+        outDate = CDate(dtText)
+        ParseAuditDate = True
+        Exit Function
+    End If
+Bad:
+    ParseAuditDate = False
 End Function
 
 Private Function EnsureReconAuditSheet(sheetName As String) As Worksheet
