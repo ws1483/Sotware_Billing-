@@ -303,11 +303,12 @@ Private Function BuildAndRender(drName As String, dFrom As Date, dTo As Date, _
             If NrmID(CStr(wsLog.Cells(logRow, 6).Value)) = NrmID(custID) _
                And UCase(CStr(wsLog.Cells(logRow, 3).Value)) = "DOCTOR" _
                And DeptMatch(pInv, dept) Then
+                invDate = CDate(wsLog.Cells(logRow, 4).Value)
                 pDate = CDate(wsPay.Cells(i, 3).Value)
                 pAmt = Num(wsPay.Cells(i, 4).Value)
-                ' opening already reflects balances net of ALL payments to date,
-                ' so only show IN-RANGE payments as lines
-                If pDate >= dFrom And pDate <= dTo Then
+                ' opening already reflects balances net of ALL payments to date;
+                ' only show in-range payment lines for invoices dated in-range
+                If invDate >= dFrom And pDate >= dFrom And pDate <= dTo Then
                     cnt = cnt + 1: rowsArr(cnt) = i: dts(cnt) = CDbl(pDate): kinds(cnt) = "PAY"
                 End If
             End If
@@ -403,7 +404,7 @@ Private Function BuildAndRender(drName As String, dFrom As Date, dTo As Date, _
 
     ' ---- totals ----
     Dim grossOut As Double, balDue As Double, excl As Double, vat As Double
-    grossOut = running: If grossOut < 0 Then grossOut = 0
+    grossOut = ageCur + age30 + age60 + age90: If grossOut < 0 Then grossOut = 0
     credit = Round(credit, 2)
     balDue = Round(grossOut - credit, 2): If balDue < 0 Then balDue = 0
     excl = Round(balDue / (1 + VAT_RATE), 2)
@@ -818,10 +819,12 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
             If LCase(Trim(CStr(wsLog.Cells(logRow, 3).Value))) = "patient" _
                And NrmID(CStr(wsLog.Cells(logRow, 7).Value)) = NrmID(patientName) _
                And DeptMatch(pInv, dept) Then
+                invDate = CDate(wsLog.Cells(logRow, 4).Value)
                 pDate = CDate(wsPay.Cells(i, 3).Value)
                 pAmt = Num(wsPay.Cells(i, 4).Value)
-                ' opening already net of ALL payments; show only IN-RANGE payments as lines
-                If pDate >= dFrom And pDate <= dTo Then
+                ' opening already reflects balances net of ALL payments to date;
+                ' only show in-range payment lines for invoices dated in-range
+                If invDate >= dFrom And pDate >= dFrom And pDate <= dTo Then
                     cnt = cnt + 1: rowsArr(cnt) = i: dts(cnt) = CDbl(pDate): kinds(cnt) = "PAY"
                 End If
             End If
@@ -918,7 +921,7 @@ Private Function BuildAndRenderPatient(patientName As String, dFrom As Date, dTo
     ' ---- totals (credit = 0) ----
     Dim grossOut As Double, balDue As Double, excl As Double, vat As Double
     Const VATR As Double = 0.15
-    grossOut = running: If grossOut < 0 Then grossOut = 0
+    grossOut = ageCur + age30 + age60 + age90: If grossOut < 0 Then grossOut = 0
     balDue = Round(grossOut, 2): If balDue < 0 Then balDue = 0
     excl = Round(balDue / (1 + VATR), 2)
     vat = Round(balDue - excl, 2)
@@ -980,3 +983,368 @@ Private Function DeptStmtTitle(dept As String) As String
     End Select
 End Function
 
+' ============================ RECON AUDIT ====================================
+Public Sub AuditRecon_DrPDFerreira()
+    Const DR_NAME As String = "DR PD Ferreira"
+    Dim dept As String
+    Dim dFrom As Date, dTo As Date
+    Dim agingTotal As Double, grossBeforeCredit As Double
+    Dim payGroupA As Double, payGroupB As Double
+    Dim diff As Double
+
+    dFrom = DateSerial(2026, 9, 22)
+    dTo = DateSerial(2026, 10, 6)
+    dept = UCase(Trim(InputBox("Dept for reconciliation (WA/WD/ALL):", "Statement Reconciliation Audit", "ALL")))
+    If dept = "" Then Exit Sub
+    If dept <> "WA" And dept <> "WD" And dept <> "ALL" Then
+        MsgBox "Please enter WA, WD, or ALL.", vbExclamation
+        Exit Sub
+    End If
+
+    diff = AuditRecon_Core(DR_NAME, dFrom, dTo, dept, "StmtReconAudit", True, _
+                                        agingTotal, grossBeforeCredit, payGroupA, payGroupB)
+End Sub
+
+Public Sub AuditRecon_DrPDFerreira_BothDepts()
+    Const DR_NAME As String = "DR PD Ferreira"
+    Const TARGET_DIFF As Double = 2588.8
+    Dim dFrom As Date, dTo As Date
+    Dim wsSum As Worksheet
+    Dim agingWA As Double, grossWA As Double, aWA As Double, bWA As Double, diffWA As Double
+    Dim agingWD As Double, grossWD As Double, aWD As Double, bWD As Double, diffWD As Double
+
+    dFrom = DateSerial(2026, 9, 22)
+    dTo = DateSerial(2026, 10, 6)
+    diffWA = AuditRecon_Core(DR_NAME, dFrom, dTo, "WA", "StmtReconAudit_WA", False, agingWA, grossWA, aWA, bWA)
+    diffWD = AuditRecon_Core(DR_NAME, dFrom, dTo, "WD", "StmtReconAudit_WD", False, agingWD, grossWD, aWD, bWD)
+
+    Set wsSum = EnsureReconAuditSheet("StmtReconAudit_Summary")
+    wsSum.Range("A1").Value = "Statement Reconciliation Summary (Dr PD Ferreira)"
+    wsSum.Range("A2").Resize(1, 8).Value = Array("Dept", "Aging", "GrossBeforeCredit", "Difference", "GroupA_PRE", "GroupB_IN", "Matches 2588.80?", "DeltaTo2588.80")
+
+    wsSum.Range("A3").Value = "WA"
+    wsSum.Range("B3").Value = agingWA
+    wsSum.Range("C3").Value = grossWA
+    wsSum.Range("D3").Value = diffWA
+    wsSum.Range("E3").Value = aWA
+    wsSum.Range("F3").Value = bWA
+    wsSum.Range("G3").Value = IIf(Abs(diffWA - TARGET_DIFF) < 0.01, "YES", "NO")
+    wsSum.Range("H3").Value = Round(diffWA - TARGET_DIFF, 2)
+
+    wsSum.Range("A4").Value = "WD"
+    wsSum.Range("B4").Value = agingWD
+    wsSum.Range("C4").Value = grossWD
+    wsSum.Range("D4").Value = diffWD
+    wsSum.Range("E4").Value = aWD
+    wsSum.Range("F4").Value = bWD
+    wsSum.Range("G4").Value = IIf(Abs(diffWD - TARGET_DIFF) < 0.01, "YES", "NO")
+    wsSum.Range("H4").Value = Round(diffWD - TARGET_DIFF, 2)
+
+    wsSum.Range("B3:F4").NumberFormat = "R #,##0.00"
+    wsSum.Range("H3:H4").NumberFormat = "R #,##0.00"
+    wsSum.Range("G3:G4").NumberFormat = "@"
+    wsSum.Columns("A:H").AutoFit
+    wsSum.Activate
+    wsSum.Range("A1").Select
+
+    MsgBox "Done. Open StmtReconAudit_Summary, StmtReconAudit_WA, and StmtReconAudit_WD.", vbInformation
+End Sub
+
+Public Sub AuditRecon_CustomFilters()
+    Dim drName As String, dept As String, outSheet As String
+    Dim fromText As String, toText As String
+    Dim dFrom As Date, dTo As Date
+    Dim agingTotal As Double, grossBeforeCredit As Double
+    Dim payGroupA As Double, payGroupB As Double
+    Dim diff As Double
+
+    drName = Trim(InputBox("Doctor name (exact Customers column B) or ALL:", "Custom Statement Reconciliation Audit", "ALL"))
+    If drName = "" Then Exit Sub
+
+    fromText = Trim(InputBox("From date (yyyy-mm-dd):", "Custom Statement Reconciliation Audit", Format(DateSerial(Year(Date), Month(Date), 1), "yyyy-mm-dd")))
+    If fromText = "" Then Exit Sub
+    If Not ParseAuditDate(fromText, dFrom) Then
+        MsgBox "Invalid From date. Use yyyy-mm-dd.", vbExclamation
+        Exit Sub
+    End If
+
+    toText = Trim(InputBox("To date (yyyy-mm-dd):", "Custom Statement Reconciliation Audit", Format(Date, "yyyy-mm-dd")))
+    If toText = "" Then Exit Sub
+    If Not ParseAuditDate(toText, dTo) Then
+        MsgBox "Invalid To date. Use yyyy-mm-dd.", vbExclamation
+        Exit Sub
+    End If
+    If dTo < dFrom Then
+        MsgBox "To date must be on or after From date.", vbExclamation
+        Exit Sub
+    End If
+
+    dept = UCase(Trim(InputBox("Dept (WA/WD/ALL):", "Custom Statement Reconciliation Audit", "ALL")))
+    If dept = "" Then Exit Sub
+    If dept <> "WA" And dept <> "WD" And dept <> "ALL" Then
+        MsgBox "Please enter WA, WD, or ALL.", vbExclamation
+        Exit Sub
+    End If
+
+    outSheet = Trim(InputBox("Output sheet name:", "Custom Statement Reconciliation Audit", "StmtReconAudit_Custom"))
+    If outSheet = "" Then outSheet = "StmtReconAudit_Custom"
+
+    diff = AuditRecon_Core(drName, dFrom, dTo, dept, outSheet, True, _
+                           agingTotal, grossBeforeCredit, payGroupA, payGroupB)
+End Sub
+
+Private Function AuditRecon_Core(drName As String, dFrom As Date, dTo As Date, _
+                                 dept As String, outSheetName As String, showDoneMsg As Boolean, _
+                                 ByRef outAging As Double, ByRef outGross As Double, _
+                                 ByRef outGroupA As Double, ByRef outGroupB As Double) As Double
+    Dim custID As String, allDoctors As Boolean
+    Dim wsLog As Worksheet, wsPay As Worksheet, wsOut As Worksheet
+    Dim lastLog As Long, lastPay As Long, i As Long, outRow As Long
+    Dim invNo As String, invDate As Date, invTotal As Double, invBal As Double
+    Dim pDate As Date, pAmt As Double, pInv As String, logRow As Long, linkedInvDate As Date
+    Dim opening As Double, inRangeInv As Double, agingTotal As Double
+    Dim payGroupA As Double, payGroupB As Double, payAllInRange As Double
+    Dim grossDateOnly As Double, grossInRangeInvOnly As Double
+    Dim dictInvDup As Object, dictPayDup As Object
+    Dim k As Variant, key As String
+    Dim okInvDate As Boolean, okPayDate As Boolean
+    Dim dupInvRow As Long, dupPayRow As Long
+
+    dept = UCase(Trim(dept))
+    If dept <> "WA" And dept <> "WD" And dept <> "ALL" Then
+        MsgBox "Invalid dept '" & dept & "' (expected WA/WD/ALL).", vbExclamation
+        Exit Function
+    End If
+
+    allDoctors = (UCase(Trim(drName)) = "ALL")
+    If allDoctors Then
+        custID = "ALL"
+        drName = "ALL DOCTORS"
+    Else
+        custID = DrNameToCustIDp(drName)
+        If custID = "" Then
+            MsgBox "Doctor not found in Customers: " & drName, vbExclamation
+            Exit Function
+        End If
+    End If
+
+    Set wsLog = ThisWorkbook.Sheets("InvoiceLog")
+    Set wsPay = ThisWorkbook.Sheets("Payments")
+    Set wsOut = EnsureReconAuditSheet(outSheetName)
+    Set dictInvDup = CreateObject("Scripting.Dictionary")
+    Set dictPayDup = CreateObject("Scripting.Dictionary")
+
+    wsOut.Range("A1").Value = "Statement Reconciliation Drill-down"
+    wsOut.Range("A2").Value = "Doctor": wsOut.Range("B2").Value = drName
+    wsOut.Range("C2").Value = "CustID": wsOut.Range("D2").Value = custID
+    wsOut.Range("E2").Value = "Dept": wsOut.Range("F2").Value = dept
+    wsOut.Range("A3").Value = "From": wsOut.Range("B3").Value = dFrom
+    wsOut.Range("C3").Value = "To": wsOut.Range("D3").Value = dTo
+    wsOut.Range("B3:D3").NumberFormat = "yyyy-mm-dd"
+
+    outRow = 5
+    wsOut.Cells(outRow, 1).Resize(1, 8).Value = Array("LogRow", "InvoiceNo", "InvoiceDate", "InvTotal(L)", "Outstanding(O)", "Bucket", "IncludeAging?", "AgingAdd")
+    outRow = outRow + 1
+
+    lastLog = wsLog.Cells(wsLog.Rows.Count, "A").End(xlUp).row
+    For i = 2 To lastLog
+        If (allDoctors Or NrmID(CStr(wsLog.Cells(i, 6).Value)) = NrmID(custID)) _
+           And UCase(CStr(wsLog.Cells(i, 3).Value)) = "DOCTOR" _
+           And DeptMatch(CStr(wsLog.Cells(i, 1).Value), dept) Then
+
+            invNo = CStr(wsLog.Cells(i, 1).Value)
+            invTotal = Num(wsLog.Cells(i, 12).Value)
+            invBal = Num(wsLog.Cells(i, 15).Value)
+            okInvDate = IsDate(wsLog.Cells(i, 4).Value)
+            If okInvDate Then invDate = CDate(wsLog.Cells(i, 4).Value)
+
+            wsOut.Cells(outRow, 1).Value = i
+            wsOut.Cells(outRow, 2).Value = invNo
+            If okInvDate Then wsOut.Cells(outRow, 3).Value = invDate
+            wsOut.Cells(outRow, 4).Value = invTotal
+            wsOut.Cells(outRow, 5).Value = invBal
+
+            If okInvDate Then
+                If invDate < dFrom Then
+                    wsOut.Cells(outRow, 6).Value = "PRE"
+                    opening = opening + invBal
+                ElseIf invDate <= dTo Then
+                    wsOut.Cells(outRow, 6).Value = "IN"
+                    inRangeInv = inRangeInv + invTotal
+                Else
+                    wsOut.Cells(outRow, 6).Value = "POST"
+                End If
+            Else
+                wsOut.Cells(outRow, 6).Value = "NO_DATE"
+            End If
+
+            If invBal > 0.005 Then
+                wsOut.Cells(outRow, 7).Value = "Y"
+                wsOut.Cells(outRow, 8).Value = invBal
+                agingTotal = agingTotal + invBal
+            Else
+                wsOut.Cells(outRow, 7).Value = "N"
+                wsOut.Cells(outRow, 8).Value = 0
+            End If
+
+            key = NrmID(invNo)
+            If dictInvDup.Exists(key) Then
+                dictInvDup(key) = dictInvDup(key) + 1
+            Else
+                dictInvDup.Add key, 1
+            End If
+            outRow = outRow + 1
+        End If
+    Next i
+
+    outRow = outRow + 1
+    wsOut.Cells(outRow, 1).Resize(1, 11).Value = Array("PayRow", "InvoiceNo", "PaymentDate", "Amount", "LogRow", "LinkedInvoiceDate", "BelongsFilterDoctor?", "DeptMatch?", "PayDateInRange?", "LinkedInvPreRange?", "Group")
+    outRow = outRow + 1
+
+    lastPay = wsPay.Cells(wsPay.Rows.Count, "A").End(xlUp).row
+    For i = 2 To lastPay
+        pInv = CStr(wsPay.Cells(i, 2).Value)
+        okPayDate = IsDate(wsPay.Cells(i, 3).Value)
+        If okPayDate Then pDate = CDate(wsPay.Cells(i, 3).Value)
+        pAmt = Num(wsPay.Cells(i, 4).Value)
+
+        If okPayDate And pDate >= dFrom And pDate <= dTo Then
+            logRow = FindLogRow(wsLog, pInv)
+
+            wsOut.Cells(outRow, 1).Value = i
+            wsOut.Cells(outRow, 2).Value = pInv
+            wsOut.Cells(outRow, 3).Value = pDate
+            wsOut.Cells(outRow, 4).Value = pAmt
+            wsOut.Cells(outRow, 5).Value = logRow
+            wsOut.Cells(outRow, 9).Value = "Y"
+
+            If logRow > 0 Then
+                linkedInvDate = CDate(wsLog.Cells(logRow, 4).Value)
+                wsOut.Cells(outRow, 6).Value = linkedInvDate
+                wsOut.Cells(outRow, 7).Value = IIf(UCase(CStr(wsLog.Cells(logRow, 3).Value)) = "DOCTOR" And (allDoctors Or NrmID(CStr(wsLog.Cells(logRow, 6).Value)) = NrmID(custID)), "Y", "N")
+                wsOut.Cells(outRow, 8).Value = IIf(DeptMatch(pInv, dept), "Y", "N")
+                wsOut.Cells(outRow, 10).Value = IIf(linkedInvDate < dFrom, "Y", "N")
+
+                If (allDoctors Or NrmID(CStr(wsLog.Cells(logRow, 6).Value)) = NrmID(custID)) _
+                   And UCase(CStr(wsLog.Cells(logRow, 3).Value)) = "DOCTOR" _
+                   And DeptMatch(pInv, dept) Then
+
+                    payAllInRange = payAllInRange + pAmt
+                    If linkedInvDate < dFrom Then
+                        payGroupA = payGroupA + pAmt
+                        wsOut.Cells(outRow, 11).Value = "A_PRE_INV"
+                    Else
+                        payGroupB = payGroupB + pAmt
+                        wsOut.Cells(outRow, 11).Value = "B_IN_INV"
+                    End If
+
+                    key = NrmID(pInv) & "|" & Format(pDate, "yyyy-mm-dd") & "|" & Format(pAmt, "0.00")
+                    If dictPayDup.Exists(key) Then
+                        dictPayDup(key) = dictPayDup(key) + 1
+                    Else
+                        dictPayDup.Add key, 1
+                    End If
+                Else
+                    wsOut.Cells(outRow, 11).Value = "OUTSIDE_DOCTOR_OR_DEPT"
+                End If
+            Else
+                wsOut.Cells(outRow, 6).Value = "NO_MATCH_IN_LOG"
+                wsOut.Cells(outRow, 7).Value = "N"
+                wsOut.Cells(outRow, 8).Value = IIf(DeptMatch(pInv, dept), "Y", "N")
+                wsOut.Cells(outRow, 10).Value = "?"
+                wsOut.Cells(outRow, 11).Value = "NO_LOG_MATCH"
+            End If
+            outRow = outRow + 1
+        End If
+    Next i
+
+    grossDateOnly = Round(opening + inRangeInv - payAllInRange, 2)
+    grossInRangeInvOnly = Round(opening + inRangeInv - payGroupB, 2)
+
+    outRow = outRow + 2
+    wsOut.Cells(outRow, 1).Value = "Summary"
+    outRow = outRow + 1
+    wsOut.Cells(outRow, 1).Value = "Aging total (sum O>0)": wsOut.Cells(outRow, 2).Value = Round(agingTotal, 2): outRow = outRow + 1
+    wsOut.Cells(outRow, 1).Value = "GrossBeforeCredit (date-only payments)": wsOut.Cells(outRow, 2).Value = grossDateOnly: outRow = outRow + 1
+    wsOut.Cells(outRow, 1).Value = "Difference (Aging - GrossBeforeCredit)": wsOut.Cells(outRow, 2).Value = Round(agingTotal - grossDateOnly, 2): outRow = outRow + 1
+    wsOut.Cells(outRow, 1).Value = "Group A payments (pre-range invoice)": wsOut.Cells(outRow, 2).Value = Round(payGroupA, 2): outRow = outRow + 1
+    wsOut.Cells(outRow, 1).Value = "Group B payments (in-range invoice)": wsOut.Cells(outRow, 2).Value = Round(payGroupB, 2): outRow = outRow + 1
+    wsOut.Cells(outRow, 1).Value = "Gross with Group B only": wsOut.Cells(outRow, 2).Value = grossInRangeInvOnly
+
+    dupInvRow = outRow + 2
+    wsOut.Cells(dupInvRow, 1).Value = "Duplicate invoice numbers (doctor/dept filtered)"
+    dupInvRow = dupInvRow + 1
+    wsOut.Cells(dupInvRow, 1).Resize(1, 2).Value = Array("InvoiceNo", "Count")
+    dupInvRow = dupInvRow + 1
+    For Each k In dictInvDup.Keys
+        If dictInvDup(k) > 1 Then
+            wsOut.Cells(dupInvRow, 1).Value = k
+            wsOut.Cells(dupInvRow, 2).Value = dictInvDup(k)
+            dupInvRow = dupInvRow + 1
+        End If
+    Next k
+
+    dupPayRow = dupInvRow + 1
+    wsOut.Cells(dupPayRow, 1).Value = "Duplicate payments (inv/date/amount)"
+    dupPayRow = dupPayRow + 1
+    wsOut.Cells(dupPayRow, 1).Resize(1, 2).Value = Array("Key", "Count")
+    dupPayRow = dupPayRow + 1
+    For Each k In dictPayDup.Keys
+        If dictPayDup(k) > 1 Then
+            wsOut.Cells(dupPayRow, 1).Value = k
+            wsOut.Cells(dupPayRow, 2).Value = dictPayDup(k)
+            dupPayRow = dupPayRow + 1
+        End If
+    Next k
+
+    wsOut.Columns("A:K").AutoFit
+    wsOut.Range("C:C,F:F").NumberFormat = "yyyy-mm-dd"
+    wsOut.Range("D:E,H:H").NumberFormat = "R #,##0.00"
+    wsOut.Activate
+    wsOut.Range("A1").Select
+
+    outAging = Round(agingTotal, 2)
+    outGross = grossDateOnly
+    outGroupA = Round(payGroupA, 2)
+    outGroupB = Round(payGroupB, 2)
+    AuditRecon_Core = Round(outAging - outGross, 2)
+
+    If showDoneMsg Then
+        MsgBox "Reconciliation audit complete on sheet '" & outSheetName & "'.", vbInformation
+    End If
+End Function
+
+Private Function ParseAuditDate(dtText As String, ByRef outDate As Date) As Boolean
+    Dim p() As String
+    On Error GoTo Bad
+    dtText = Trim(dtText)
+    If InStr(1, dtText, "-", vbBinaryCompare) > 0 Then
+        p = Split(dtText, "-")
+        If UBound(p) = 2 Then
+            outDate = DateSerial(CInt(p(0)), CInt(p(1)), CInt(p(2)))
+            ParseAuditDate = True
+            Exit Function
+        End If
+    End If
+    If IsDate(dtText) Then
+        outDate = CDate(dtText)
+        ParseAuditDate = True
+        Exit Function
+    End If
+Bad:
+    ParseAuditDate = False
+End Function
+
+Private Function EnsureReconAuditSheet(sheetName As String) As Worksheet
+    Dim ws As Worksheet
+    On Error Resume Next
+    Set ws = ThisWorkbook.Sheets(sheetName)
+    On Error GoTo 0
+    If ws Is Nothing Then
+        Set ws = ThisWorkbook.Sheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count))
+        ws.Name = sheetName
+    Else
+        ws.Cells.Clear
+    End If
+    Set EnsureReconAuditSheet = ws
+End Function
